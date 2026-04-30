@@ -17,9 +17,12 @@ Everything else is handled automatically:
   - Headless Ghidra import and verification
 """
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -29,10 +32,13 @@ REPO_DIR      = Path(__file__).resolve().parent
 GHIDRA_DIR    = REPO_DIR / "ghidra"
 EXES_ROOT     = REPO_DIR / "exes"
 SCRIPTS_DIR   = REPO_DIR / "scripts"
-STEAMLESS_DIR = REPO_DIR / "tools" / "Steamless"
+TOOLS_DIR     = REPO_DIR / "tools"
+STEAMLESS_DIR = TOOLS_DIR / "Steamless"
+LLVM_DIR      = TOOLS_DIR / "llvm"
 
 GHIDRA_RELEASES_URL    = "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest"
 STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases/latest"
+LLVM_RELEASES_URL      = "https://api.github.com/repos/llvm/llvm-project/releases/latest"
 
 REQUIRED_PACKAGES = {"pdbparse": "pdbparse", "pyghidra": "pyghidra"}
 
@@ -87,14 +93,102 @@ def _can_import(name):
         return False
 
 
-def _check_clang():
+def _clang_version():
     try:
         r = subprocess.run(
             ["clang", "--version"], capture_output=True, text=True, check=True)
-        print(f"  {r.stdout.strip().splitlines()[0]}")
-        return True
+        return r.stdout.strip().splitlines()[0]
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
+        return None
+
+
+# -- LLVM / Clang ------------------------------------------------------
+
+def _ensure_clang():
+    """Make sure clang is available; download LLVM locally if not."""
+    clang_name = "clang.exe" if sys.platform == "win32" else "clang"
+    local_clang = LLVM_DIR / "bin" / clang_name
+
+    if local_clang.is_file():
+        os.environ["PATH"] = str(LLVM_DIR / "bin") + os.pathsep + os.environ["PATH"]
+        ver = _clang_version()
+        if ver:
+            print(f"  {ver}")
+            return
+
+    ver = _clang_version()
+    if ver:
+        print(f"  {ver}")
+        return
+
+    _download_llvm()
+    os.environ["PATH"] = str(LLVM_DIR / "bin") + os.pathsep + os.environ["PATH"]
+    ver = _clang_version()
+    if ver:
+        print(f"  {ver}")
+    else:
+        print("  ERROR: clang not working after LLVM install")
+        sys.exit(1)
+
+
+def _download_llvm():
+    print("  clang not found; downloading LLVM ...")
+
+    req = urllib.request.Request(LLVM_RELEASES_URL, headers=API_HEADERS)
+    with urllib.request.urlopen(req) as resp:
+        release = json.loads(resp.read())
+
+    if sys.platform == "win32":
+        machine = platform.machine().lower()
+        arch = "x86_64" if machine in ("amd64", "x86_64") else "aarch64"
+        suffix = f"{arch}-pc-windows-msvc.tar.xz"
+    elif sys.platform == "darwin":
+        machine = platform.machine().lower()
+        arch = "ARM64" if machine == "arm64" else "X64"
+        suffix = f"macOS-{arch}.tar.xz"
+    else:
+        machine = platform.machine().lower()
+        arch = "ARM64" if machine == "aarch64" else "X64"
+        suffix = f"Linux-{arch}.tar.xz"
+
+    asset = next(
+        (a for a in release.get("assets", [])
+         if a["name"].endswith(suffix) and a["name"].endswith(".tar.xz")),
+        None)
+    if not asset:
+        print(f"  ERROR: no LLVM asset matching *{suffix}")
+        print("  Install LLVM/Clang manually and add clang to PATH.")
+        sys.exit(1)
+
+    size_mb = asset.get("size", 0) / 1024 / 1024
+    print(f"  {asset['name']} ({size_mb:.0f} MB)")
+
+    with tempfile.NamedTemporaryFile(suffix=".tar.xz", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _download(asset["browser_download_url"], tmp_path)
+        print("  Extracting (this may take several minutes) ...")
+        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tmp_path, "r:xz") as tar:
+            try:
+                tar.extractall(TOOLS_DIR, filter="data")
+            except TypeError:
+                tar.extractall(TOOLS_DIR)
+        for d in TOOLS_DIR.iterdir():
+            if d.is_dir() and d != LLVM_DIR and (
+                    "clang+llvm" in d.name or "LLVM" in d.name):
+                if LLVM_DIR.exists():
+                    shutil.rmtree(LLVM_DIR)
+                d.rename(LLVM_DIR)
+                break
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    clang_name = "clang.exe" if sys.platform == "win32" else "clang"
+    if not (LLVM_DIR / "bin" / clang_name).is_file():
+        print("  ERROR: clang not found after LLVM extraction")
+        sys.exit(1)
+    print("  LLVM installed")
 
 
 # -- Submodules --------------------------------------------------------
@@ -230,10 +324,7 @@ def discover_games():
 
 def generate_scripts(games):
     _header("Generating Import Scripts")
-
-    if not _check_clang():
-        print("  ERROR: clang not found on PATH -- install LLVM/Clang")
-        sys.exit(1)
+    _ensure_clang()
 
     if "skyrim" in games:
         print("  Skyrim SE / AE ...")
