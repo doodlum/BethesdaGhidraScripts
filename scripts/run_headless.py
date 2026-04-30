@@ -15,14 +15,16 @@ Layout:
   exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 
-REPO_DIR     = Path(__file__).parent.parent
-GHIDRA_DIR   = REPO_DIR / "ghidra"
-EXES_ROOT    = REPO_DIR / "exes"
-SCRIPTS_DIR  = REPO_DIR / "ghidrascripts"
-PROJECTS_DIR = REPO_DIR / "ghidraprojects"
+REPO_DIR       = Path(__file__).parent.parent
+GHIDRA_DIR     = REPO_DIR / "ghidra"
+EXES_ROOT      = REPO_DIR / "exes"
+SCRIPTS_DIR    = REPO_DIR / "ghidrascripts"
+PROJECTS_DIR   = REPO_DIR / "ghidraprojects"
+STEAMLESS_CLI  = REPO_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
 
 PROJECT_NAME = {
     'skyrim': 'SkyrimSE',
@@ -52,6 +54,53 @@ SPOT_CHECKS = {
         'min_named': 200, 'min_enums': 100, 'min_structs': 500, 'min_syms': 0,
     },
 }
+
+
+def _ensure_unpacked(binary: Path) -> Path:
+    """Detect and strip SteamStub DRM via Steamless CLI.
+
+    Returns an unpacked copy if DRM was present, otherwise the original. A
+    previously unpacked file newer than the source is reused without re-running
+    Steamless. Missing CLI / non-Windows hosts are a transparent no-op.
+    """
+    if not STEAMLESS_CLI.is_file() or sys.platform != "win32":
+        return binary
+
+    src_mtime = binary.stat().st_mtime
+
+    def find_unpacked():
+        # Steamless versions vary: <stem>.unpacked.exe or <name>.unpacked[.exe]
+        for c in binary.parent.glob(f"{binary.stem}*unpacked*"):
+            if c == binary or not c.is_file():
+                continue
+            if c.stat().st_mtime >= src_mtime:
+                return c
+        return None
+
+    cached = find_unpacked()
+    if cached is not None:
+        print(f"Using cached Steamless output: {cached.name}")
+        return cached
+
+    print(f"Running Steamless on {binary.name} ...")
+    try:
+        result = subprocess.run(
+            [str(STEAMLESS_CLI), "--quiet", "--keepbind", str(binary)],
+            capture_output=True, text=True, check=False,
+            cwd=str(STEAMLESS_CLI.parent),
+        )
+        if result.stdout.strip(): print(result.stdout.rstrip())
+        if result.stderr.strip(): print(result.stderr.rstrip(), file=sys.stderr)
+    except Exception as e:
+        print(f"  Steamless failed to run: {e} -- using original binary.")
+        return binary
+
+    out = find_unpacked()
+    if out is not None:
+        print(f"  SteamStub DRM removed -> {out.name}")
+        return out
+    print("  No SteamStub DRM detected; using original binary.")
+    return binary
 
 
 def script_for(game: str, version: str) -> Path:
@@ -253,6 +302,7 @@ def main():
         print("\n" + "=" * 60)
         print(f"  {game.upper()} / {version.upper()}: {binary}")
         print("=" * 60)
+        binary = _ensure_unpacked(binary)
         script_path = script_for(game, version)
         if not script_path.is_file():
             print(f"SKIP: script not found at {script_path}")
