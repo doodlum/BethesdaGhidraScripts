@@ -8,13 +8,9 @@ Drop game executables under exes/<game>/<version>/ and run this script:
   exes/skyrim/ae/SkyrimSE.exe
   exes/f4/ae/Fallout4.exe
 
-Everything else is handled automatically:
-  - Git submodules updated to latest upstream
-  - Python dependencies installed
-  - Ghidra downloaded and extracted (if missing)
-  - Steamless downloaded for DRM removal (Windows, if missing)
-  - CommonLib import scripts generated via clang
-  - Headless Ghidra import and verification
+Everything else is handled automatically. On subsequent runs, expensive steps
+(script generation, headless import) are skipped unless something has actually
+changed (submodule update, new/replaced exe, missing project).
 """
 import json
 import os
@@ -29,12 +25,17 @@ import zipfile
 from pathlib import Path
 
 REPO_DIR      = Path(__file__).resolve().parent
-GHIDRA_DIR    = REPO_DIR / "ghidra"
 EXES_ROOT     = REPO_DIR / "exes"
 SCRIPTS_DIR   = REPO_DIR / "scripts"
 TOOLS_DIR     = REPO_DIR / "tools"
+GHIDRA_DIR    = TOOLS_DIR / "ghidra"
 STEAMLESS_DIR = TOOLS_DIR / "Steamless"
 LLVM_DIR      = TOOLS_DIR / "llvm"
+
+GHIDRA_SCRIPTS_DIR  = REPO_DIR / "ghidrascripts"
+PROJECTS_DIR        = REPO_DIR / "ghidraprojects"
+GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
+STATE_FILE          = REPO_DIR / ".last_run_state"
 
 GHIDRA_RELEASES_URL    = "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest"
 STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases/latest"
@@ -66,7 +67,63 @@ def _download(url, dest, label="Downloading"):
             print()
 
 
-# -- Prerequisites ----------------------------------------------------
+# -- State tracking ----------------------------------------------------
+
+def _get_submodule_hashes():
+    r = subprocess.run(
+        ["git", "submodule", "status", "--recursive"],
+        cwd=str(REPO_DIR), capture_output=True, text=True, check=True)
+    hashes = {}
+    for line in r.stdout.strip().splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            hashes[parts[1]] = parts[0].lstrip("+-")
+    return hashes
+
+
+def _get_exe_fingerprints():
+    fps = {}
+    if EXES_ROOT.is_dir():
+        for exe in EXES_ROOT.rglob("*.exe"):
+            if "unpacked" in exe.name:
+                continue
+            rel = exe.relative_to(EXES_ROOT).as_posix()
+            st = exe.stat()
+            fps[rel] = {"mtime": st.st_mtime, "size": st.st_size}
+    return fps
+
+
+def _load_state():
+    if STATE_FILE.is_file():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_state(submodules, exes):
+    STATE_FILE.write_text(json.dumps(
+        {"submodules": submodules, "exes": exes}, indent=2))
+
+
+def _project_exists():
+    gpr = PROJECTS_DIR / GHIDRA_PROJECT_NAME / f"{GHIDRA_PROJECT_NAME}.gpr"
+    return gpr.is_file()
+
+
+def _scripts_exist(games):
+    if "skyrim" in games:
+        for name in ("CommonLibImport_SE.py", "CommonLibImport_AE.py"):
+            if not (GHIDRA_SCRIPTS_DIR / name).is_file():
+                return False
+    if "f4" in games:
+        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_F4_AE.py").is_file():
+            return False
+    return True
+
+
+# -- Prerequisites -----------------------------------------------------
 
 def check_prerequisites():
     _header("Prerequisites")
@@ -215,6 +272,13 @@ def _ghidra_version(path):
 def setup_ghidra():
     _header("Ghidra")
 
+    # Migrate from old location (repo root) to tools/
+    old_ghidra = REPO_DIR / "ghidra"
+    if not GHIDRA_DIR.exists() and old_ghidra.exists() and _ghidra_version(old_ghidra):
+        print("  Migrating Ghidra to tools/ ...")
+        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_ghidra), str(GHIDRA_DIR))
+
     ver = _ghidra_version(GHIDRA_DIR)
     if ver:
         print(f"  Ghidra {ver} (installed)")
@@ -246,6 +310,7 @@ def setup_ghidra():
                 zf.extractall(tmpdir)
             roots = [p for p in Path(tmpdir).iterdir() if p.is_dir()]
             src = roots[0] if len(roots) == 1 else Path(tmpdir)
+            TOOLS_DIR.mkdir(parents=True, exist_ok=True)
             if GHIDRA_DIR.exists():
                 shutil.rmtree(GHIDRA_DIR)
             shutil.copytree(str(src), str(GHIDRA_DIR))
@@ -349,6 +414,46 @@ def run_headless():
         cwd=str(REPO_DIR)).returncode
 
 
+# -- Launch Ghidra -----------------------------------------------------
+
+def launch_ghidra():
+    _header("Launching Ghidra")
+    if sys.platform == "win32":
+        launcher = GHIDRA_DIR / "ghidraRun.bat"
+    else:
+        launcher = GHIDRA_DIR / "ghidraRun"
+    if not launcher.is_file():
+        print(f"  WARNING: {launcher.name} not found")
+        return
+
+    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+
+    # Remove stale lock left by headless run (JPype/JVM may not release instantly)
+    lock = project_dir / f"{GHIDRA_PROJECT_NAME}.lock"
+    if lock.exists():
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+    print(f"  Project: {project_dir.relative_to(REPO_DIR)}/")
+    if sys.platform == "win32":
+        subprocess.Popen(
+            [str(launcher), str(gpr)],
+            cwd=str(GHIDRA_DIR),
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(
+            [str(launcher), str(gpr)],
+            cwd=str(GHIDRA_DIR),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+
+
 # -- Main --------------------------------------------------------------
 
 def main():
@@ -373,8 +478,34 @@ def main():
 
     print(f"\n  Detected: {', '.join(sorted(games))}")
 
-    generate_scripts(games)
-    rc = run_headless()
+    prev = _load_state()
+    cur_subs = _get_submodule_hashes()
+    cur_exes = _get_exe_fingerprints()
+
+    subs_changed    = cur_subs != prev.get("submodules")
+    exes_changed    = cur_exes != prev.get("exes")
+    project_missing = not _project_exists()
+    scripts_missing = not _scripts_exist(games)
+
+    need_generate = subs_changed or scripts_missing
+    need_import   = need_generate or exes_changed or project_missing
+
+    rc = 0
+
+    if need_generate:
+        generate_scripts(games)
+    else:
+        print("\n  Import scripts up to date, skipping generation.")
+
+    if need_import:
+        rc = run_headless()
+    else:
+        print("  Ghidra project up to date, skipping import.")
+
+    if rc == 0:
+        _save_state(cur_subs, cur_exes)
+
+    launch_ghidra()
 
     print("\n" + "=" * 60)
     if rc == 0:

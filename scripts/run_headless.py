@@ -18,12 +18,13 @@ Layout:
 All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
 """
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_DIR       = Path(__file__).parent.parent
-GHIDRA_DIR     = REPO_DIR / "ghidra"
+GHIDRA_DIR     = REPO_DIR / "tools" / "ghidra"
 EXES_ROOT      = REPO_DIR / "exes"
 SCRIPTS_DIR    = REPO_DIR / "ghidrascripts"
 PROJECTS_DIR   = REPO_DIR / "ghidraprojects"
@@ -78,7 +79,8 @@ def _ensure_unpacked(binary: Path) -> Path:
         for c in binary.parent.glob(f"{binary.stem}*unpacked*"):
             if c == binary or not c.is_file():
                 continue
-            if c.stat().st_mtime >= src_mtime:
+            cstat = c.stat()
+            if cstat.st_mtime >= src_mtime and cstat.st_size >= binary.stat().st_size // 2:
                 return c
         return None
 
@@ -317,6 +319,11 @@ def main():
 
     project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
     project_dir.mkdir(parents=True, exist_ok=True)
+
+    gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+    rep = project_dir / f"{GHIDRA_PROJECT_NAME}.rep"
+    if rep.exists() and not gpr.exists():
+        shutil.rmtree(rep)
 
     failures = []
     try:

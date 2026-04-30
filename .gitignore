@@ -1,6 +1,6 @@
 /ghidrascripts
 /exes
-/ghidra
 __pycache__
 /ghidraprojects
 /tools
+.last_run_state

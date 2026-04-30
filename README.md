@@ -137,8 +137,7 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 │   └── commonlibf4/                 Fallout 4 AE pipeline
 ├── ghidrascripts/                   Generated import scripts (output)
 ├── ghidraprojects/                  Ghidra project (output)
-├── ghidra/                          Ghidra install (auto-downloaded)
-└── tools/                           Steamless, LLVM (auto-downloaded)
+└── tools/                           Ghidra, Steamless, LLVM (auto-downloaded)
 ```
 
 ---
