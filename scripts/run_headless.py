@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Headless PyGhidra runner — imports each .exe under exes/<game>/<version>/ into
-its own Ghidra project and applies the matching CommonLibImport_*.py script.
+a single shared Ghidra project and applies the matching CommonLibImport_*.py
+script.
 
 Usage:
   python scripts/run_headless.py                 # run all
@@ -13,16 +14,23 @@ Layout:
   exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
   exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
   exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
+
+All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
 """
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-REPO_DIR     = Path(__file__).parent.parent
-GHIDRA_DIR   = REPO_DIR / "ghidra"
-EXES_ROOT    = REPO_DIR / "exes"
-SCRIPTS_DIR  = REPO_DIR / "ghidrascripts"
-PROJECTS_DIR = REPO_DIR / "ghidraprojects"
+REPO_DIR       = Path(__file__).parent.parent
+GHIDRA_DIR     = REPO_DIR / "tools" / "ghidra"
+EXES_ROOT      = REPO_DIR / "exes"
+SCRIPTS_DIR    = REPO_DIR / "ghidrascripts"
+PROJECTS_DIR   = REPO_DIR / "ghidraprojects"
+STEAMLESS_CLI  = REPO_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
+
+GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
 
 PROJECT_NAME = {
     'skyrim': 'SkyrimSE',
@@ -52,6 +60,54 @@ SPOT_CHECKS = {
         'min_named': 200, 'min_enums': 100, 'min_structs': 500, 'min_syms': 0,
     },
 }
+
+
+def _ensure_unpacked(binary: Path) -> Path:
+    """Detect and strip SteamStub DRM via Steamless CLI.
+
+    Returns an unpacked copy if DRM was present, otherwise the original. A
+    previously unpacked file newer than the source is reused without re-running
+    Steamless. Missing CLI / non-Windows hosts are a transparent no-op.
+    """
+    if not STEAMLESS_CLI.is_file() or sys.platform != "win32":
+        return binary
+
+    src_mtime = binary.stat().st_mtime
+
+    def find_unpacked():
+        # Steamless versions vary: <stem>.unpacked.exe or <name>.unpacked[.exe]
+        for c in binary.parent.glob(f"{binary.stem}*unpacked*"):
+            if c == binary or not c.is_file():
+                continue
+            cstat = c.stat()
+            if cstat.st_mtime >= src_mtime and cstat.st_size >= binary.stat().st_size // 2:
+                return c
+        return None
+
+    cached = find_unpacked()
+    if cached is not None:
+        print(f"Using cached Steamless output: {cached.name}")
+        return cached
+
+    print(f"Running Steamless on {binary.name} ...")
+    try:
+        result = subprocess.run(
+            [str(STEAMLESS_CLI), "--quiet", "--keepbind", str(binary)],
+            capture_output=True, text=True, check=False,
+            cwd=str(STEAMLESS_CLI.parent),
+        )
+        if result.stdout.strip(): print(result.stdout.rstrip())
+        if result.stderr.strip(): print(result.stderr.rstrip(), file=sys.stderr)
+    except Exception as e:
+        print(f"  Steamless failed to run: {e} -- using original binary.")
+        return binary
+
+    out = find_unpacked()
+    if out is not None:
+        print(f"  SteamStub DRM removed -> {out.name}")
+        return out
+    print("  No SteamStub DRM detected; using original binary.")
+    return binary
 
 
 def script_for(game: str, version: str) -> Path:
@@ -176,6 +232,17 @@ def _verify(program, game, version):
     return True
 
 
+def _get_folder(root_folder, game, version):
+    """Get or create /<game>/<version>/ folder in the project."""
+    game_folder = root_folder.getFolder(game)
+    if game_folder is None:
+        game_folder = root_folder.createFolder(game)
+    ver_folder = game_folder.getFolder(version)
+    if ver_folder is None:
+        ver_folder = game_folder.createFolder(version)
+    return ver_folder
+
+
 def _run_one(project, game, version, binary, script_path, monitor):
     from ghidra.app.util.importer import MessageLog
     import ghidra
@@ -184,11 +251,13 @@ def _run_one(project, game, version, binary, script_path, monitor):
     import pyghidra
 
     root_folder = project.getProjectData().getRootFolder()
+    folder = _get_folder(root_folder, game, version)
+    folder_path = f"/{game}/{version}"
     project_name = PROJECT_NAME[game]
 
     domain_file = None
     for cand in (binary.name, binary.stem, project_name):
-        domain_file = root_folder.getFile(cand)
+        domain_file = folder.getFile(cand)
         if domain_file is not None:
             break
 
@@ -198,7 +267,7 @@ def _run_one(project, game, version, binary, script_path, monitor):
         jfile           = java.io.File(str(binary))
         import_consumer = java.lang.Object()
         load_results = ghidra.app.util.importer.AutoImporter.importByUsingBestGuess(
-            jfile, project, "/", import_consumer, msg_log, monitor
+            jfile, project, folder_path, import_consumer, msg_log, monitor
         )
         if not load_results:
             raise RuntimeError("Import returned no results.")
@@ -206,14 +275,14 @@ def _run_one(project, game, version, binary, script_path, monitor):
         load_results.save(monitor)
         load_results.close()
         for cand in (binary.name, binary.stem, project_name):
-            domain_file = root_folder.getFile(cand)
+            domain_file = folder.getFile(cand)
             if domain_file is not None:
                 break
         if domain_file is None:
-            files = [f.getName() for f in root_folder.getFiles()]
+            files = [f.getName() for f in folder.getFiles()]
             if not files:
                 raise RuntimeError("No files found in project after import.")
-            domain_file = root_folder.getFile(files[0])
+            domain_file = folder.getFile(files[0])
     else:
         print(f"Program '{domain_file.getName()}' already in project, skipping import.")
 
@@ -248,26 +317,37 @@ def main():
     from ghidra.util.task import ConsoleTaskMonitor
     monitor = ConsoleTaskMonitor()
 
+    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
+    rep = project_dir / f"{GHIDRA_PROJECT_NAME}.rep"
+    if rep.exists() and not gpr.exists():
+        shutil.rmtree(rep)
+
     failures = []
-    for game, version, binary in targets:
-        print("\n" + "=" * 60)
-        print(f"  {game.upper()} / {version.upper()}: {binary}")
-        print("=" * 60)
-        script_path = script_for(game, version)
-        if not script_path.is_file():
-            print(f"SKIP: script not found at {script_path}")
-            failures.append((game, version, "missing script"))
-            continue
-        project_dir = PROJECTS_DIR / f"{game}_{version}"
-        project_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with pyghidra.open_project(project_dir, PROJECT_NAME[game], create=True) as project:
-                ok = _run_one(project, game, version, binary, script_path, monitor)
-                if not ok:
-                    failures.append((game, version, "verification failed"))
-        except Exception as e:
-            print(f"ERROR: {e}")
-            failures.append((game, version, str(e)))
+    try:
+        with pyghidra.open_project(project_dir, GHIDRA_PROJECT_NAME, create=True) as project:
+            for game, version, binary in targets:
+                print("\n" + "=" * 60)
+                print(f"  {game.upper()} / {version.upper()}: {binary}")
+                print("=" * 60)
+                binary = _ensure_unpacked(binary)
+                script_path = script_for(game, version)
+                if not script_path.is_file():
+                    print(f"SKIP: script not found at {script_path}")
+                    failures.append((game, version, "missing script"))
+                    continue
+                try:
+                    ok = _run_one(project, game, version, binary, script_path, monitor)
+                    if not ok:
+                        failures.append((game, version, "verification failed"))
+                except Exception as e:
+                    print(f"ERROR: {e}")
+                    failures.append((game, version, str(e)))
+    except Exception as e:
+        print(f"ERROR opening project: {e}")
+        sys.exit(1)
 
     print("\n" + "=" * 60)
     if failures:
