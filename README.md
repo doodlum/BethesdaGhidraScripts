@@ -17,6 +17,7 @@ cd BethesdaGhidraScripts
 ```
 exes/skyrim/se/SkyrimSE.exe      Skyrim SE  (1.5.97)
 exes/skyrim/ae/SkyrimSE.exe      Skyrim AE  (1.6.1170+)
+exes/skyrim/vr/SkyrimVR.exe      Skyrim VR  (1.4.15)
 exes/f4/ae/Fallout4.exe          Fallout 4  (1.11.191)
 ```
 
@@ -56,10 +57,16 @@ first run.
 |--------------|------------------|------------------|---------------------------|
 | Skyrim SE    | `exes/skyrim/se` | `1-5-97-0`       | `powerof3/CommonLibSSE`   |
 | Skyrim AE    | `exes/skyrim/ae` | `1-6-1170-0`     | `powerof3/CommonLibSSE`   |
-| Fallout 4 AE | `exes/f4/ae`    | `1-11-191-0`     | `libxse/commonlibf4`      |
+| Skyrim VR    | `exes/skyrim/vr` | `1-4-15-0` (csv) | `powerof3/CommonLibSSE`   |
+| Fallout 4 AE | `exes/f4/ae`     | `1-11-191-0`     | `libxse/commonlibf4`      |
 
-You don't need all three. The script detects which executables are present and
-only generates and runs what's needed.
+You don't need all of them. The script detects which executables are present
+and only generates and runs what's needed.
+
+Skyrim VR shares the SE-derived ID namespace with SE/AE, so the same
+`CommonLibSSE` headers generate a VR-targeting script that resolves SE IDs
+against the VR address library.  The VR address library ships as a CSV
+(community-maintained) rather than meh321's binary format.
 
 ---
 

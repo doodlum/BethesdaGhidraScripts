@@ -1,7 +1,9 @@
-"""Skyrim SE/AE address library binary database loader.
+"""Skyrim SE / AE / VR address library database loader.
 
-Parses the compressed binary format used by Address Library for SKSE Plugins
-to map relocation IDs to RVAs.
+SE (1.5.97) and AE (1.6.1170) ship as compressed .bin files in the meh321
+V1/V2 format.  VR (1.4.15) ships as a flat CSV with a metadata row.  All
+three share the SE-derived ID namespace, so a single ID can be looked up
+across all three DBs.
 """
 
 from __future__ import annotations
@@ -12,11 +14,12 @@ from typing import Dict
 
 
 class AddressLibrary:
-    """Loads address-library binary databases mapping relocation IDs to RVAs."""
+    """Loads address-library databases mapping relocation IDs to RVAs."""
 
     def __init__(self):
         self.se_db: Dict[int, int] = {}
         self.ae_db: Dict[int, int] = {}
+        self.vr_db: Dict[int, int] = {}
 
     def load_bin(self, file_path: str) -> Dict[int, int]:
         if not os.path.exists(file_path):
@@ -55,7 +58,40 @@ class AddressLibrary:
                 db[id_val] = off_val; pvid = id_val; poffset = off_val
         return db
 
+    @staticmethod
+    def load_csv(file_path: str, skip_meta: bool = True) -> Dict[int, int]:
+        """Read an 'id,offset' CSV file (header + optional metadata row).
+
+        The community VR address libraries (Old, etc.) ship as CSV rather
+        than the meh321 binary format.  Format:
+
+          id,offset                          # header line
+          <metadata>,<game-version-string>   # one metadata row (skipped)
+          <id>,<hex-offset>                  # entries
+
+        ``offset`` is parsed as hex without a ``0x`` prefix.
+        """
+        if not os.path.exists(file_path):
+            return {}
+        db: Dict[int, int] = {}
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        start = 2 if skip_meta and len(lines) > 1 else 1
+        for line in lines[start:]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if len(parts) != 2:
+                continue
+            try:
+                db[int(parts[0])] = int(parts[1], 16)
+            except ValueError:
+                continue
+        return db
+
     def load_all(self, base_path: str) -> None:
         sse_dir = os.path.join(base_path, 'sse')
         self.se_db = self.load_bin(os.path.join(sse_dir, 'version-1-5-97-0.bin'))
         self.ae_db = self.load_bin(os.path.join(sse_dir, 'versionlib-1-6-1170-0.bin'))
+        self.vr_db = self.load_csv(os.path.join(sse_dir, 'version-1-4-15-0.csv'))

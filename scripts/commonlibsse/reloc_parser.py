@@ -264,7 +264,10 @@ def _scan_header_relocations(
 
             se_off = addr_lib.se_db.get(se_id)
             ae_off = addr_lib.ae_db.get(ae_id)
-            if not se_off and not ae_off:
+            # SkyrimVR (1.4.15) shares the SE-derived ID namespace, so the
+            # VR DB is keyed on se_id.
+            vr_off = addr_lib.vr_db.get(se_id) if hasattr(addr_lib, 'vr_db') else None
+            if not se_off and not ae_off and not vr_off:
                 prev_line = line
                 continue
 
@@ -291,7 +294,7 @@ def _scan_header_relocations(
                 'class_': sym_class,
                 'ret': '', 'params': '',
                 'is_static': False,
-                'se_off': se_off, 'ae_off': ae_off,
+                'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
             })
 
         # REL::Relocation using Offset:: reference (no RELOCATION_ID)
@@ -315,7 +318,9 @@ def _scan_header_relocations(
 
             se_off = addr_lib.se_db.get(se_id) if se_id else None
             ae_off = addr_lib.ae_db.get(ae_id) if ae_id else None
-            if not se_off and not ae_off:
+            vr_off = (addr_lib.vr_db.get(se_id) if (se_id and hasattr(addr_lib, 'vr_db'))
+                      else None)
+            if not se_off and not ae_off and not vr_off:
                 prev_line = line
                 continue
 
@@ -338,7 +343,7 @@ def _scan_header_relocations(
                 'class_': sym_class,
                 'ret': '', 'params': '',
                 'is_static': False,
-                'se_off': se_off, 'ae_off': ae_off,
+                'se_off': se_off, 'ae_off': ae_off, 'vr_off': vr_off,
             })
 
         prev_line = line
@@ -500,10 +505,14 @@ def _scan_rtti_vtable_file(
 
         for m in _RTTI_RE.finditer(se_text):
             name = m.group(1)
-            off = addr_lib.se_db.get(int(m.group(2)))
-            if off:
-                labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
-                labels[name]['se_off'] = off
+            sid = int(m.group(2))
+            off = addr_lib.se_db.get(sid)
+            vr_off = addr_lib.vr_db.get(sid) if hasattr(addr_lib, 'vr_db') else None
+            if off or vr_off:
+                labels.setdefault(name, {'name': name, 'se_off': None,
+                                         'ae_off': None, 'vr_off': None})
+                if off:    labels[name]['se_off'] = off
+                if vr_off: labels[name]['vr_off'] = vr_off
 
         for m in _VTABLE_RE.finditer(ae_text):
             base_name = m.group(2)
@@ -513,7 +522,8 @@ def _scan_rtti_vtable_file(
                 if not off:
                     continue
                 lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None, 'ae_off': None})
+                labels.setdefault(lname, {'name': lname, 'se_off': None,
+                                          'ae_off': None, 'vr_off': None})
                 labels[lname]['ae_off'] = off
 
         for m in _VTABLE_RE.finditer(se_text):
@@ -521,29 +531,39 @@ def _scan_rtti_vtable_file(
             ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
             for idx, id_ in enumerate(ids):
                 off = addr_lib.se_db.get(id_)
-                if not off:
+                vr_off = addr_lib.vr_db.get(id_) if hasattr(addr_lib, 'vr_db') else None
+                if not off and not vr_off:
                     continue
                 lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None, 'ae_off': None})
-                labels[lname]['se_off'] = off
+                labels.setdefault(lname, {'name': lname, 'se_off': None,
+                                          'ae_off': None, 'vr_off': None})
+                if off:    labels[lname]['se_off'] = off
+                if vr_off: labels[lname]['vr_off'] = vr_off
     else:
         for m in _RTTI_RE.finditer(content):
             name = m.group(1)
-            off = addr_lib.se_db.get(int(m.group(2)))
-            if off:
-                labels.setdefault(name, {'name': name, 'se_off': None, 'ae_off': None})
-                labels[name]['se_off'] = off
+            sid = int(m.group(2))
+            off = addr_lib.se_db.get(sid)
+            vr_off = addr_lib.vr_db.get(sid) if hasattr(addr_lib, 'vr_db') else None
+            if off or vr_off:
+                labels.setdefault(name, {'name': name, 'se_off': None,
+                                         'ae_off': None, 'vr_off': None})
+                if off:    labels[name]['se_off'] = off
+                if vr_off: labels[name]['vr_off'] = vr_off
 
         for m in _VTABLE_RE.finditer(content):
             base_name = m.group(2)
             ids = [int(x) for x in _REL_ID_RE.findall(m.group(3))]
             for idx, id_ in enumerate(ids):
                 off = addr_lib.se_db.get(id_)
-                if not off:
+                vr_off = addr_lib.vr_db.get(id_) if hasattr(addr_lib, 'vr_db') else None
+                if not off and not vr_off:
                     continue
                 lname = base_name if idx == 0 else '{}_{}'.format(base_name, idx + 1)
-                labels.setdefault(lname, {'name': lname, 'se_off': None, 'ae_off': None})
-                labels[lname]['se_off'] = off
+                labels.setdefault(lname, {'name': lname, 'se_off': None,
+                                          'ae_off': None, 'vr_off': None})
+                if off:    labels[lname]['se_off'] = off
+                if vr_off: labels[lname]['vr_off'] = vr_off
 
     return list(labels.values())
 

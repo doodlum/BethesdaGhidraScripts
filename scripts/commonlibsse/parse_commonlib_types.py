@@ -81,6 +81,15 @@ VERSIONS = {
         'defines':     ['-DSKYRIM_AE', '-DSKYRIM_SUPPORT_AE'],
         'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_AE.py'),
     },
+    'svr': {
+        # Skyrim VR (1.4.15) — same headers as SE; symbols come from VR
+        # offsets looked up via the SE-namespace ID (SE and VR share the
+        # same ID space).  The powerof3 CommonLibSSE fork has no
+        # VR-specific preprocessor define, so we parse with the SE define
+        # set and just attach VR offsets at script-generation time.
+        'defines':     [],
+        'output':      os.path.join(OUTPUT_DIR, 'CommonLibImport_VR.py'),
+    },
 }
 
 
@@ -212,10 +221,12 @@ def main():
 
     label_by_name = {}
     for lbl in label_syms:
-        label_by_name.setdefault(lbl['name'], {'name': lbl['name'], 'se_off': None, 'ae_off': None})
+        label_by_name.setdefault(lbl['name'], {
+            'name': lbl['name'], 'se_off': None, 'ae_off': None, 'vr_off': None})
         entry = label_by_name[lbl['name']]
         if lbl.get('se_off'): entry['se_off'] = lbl['se_off']
         if lbl.get('ae_off'): entry['ae_off'] = lbl['ae_off']
+        if lbl.get('vr_off'): entry['vr_off'] = lbl['vr_off']
 
     merged_funcs = list(func_syms)
     seen_se = set(fs['se_off'] for fs in merged_funcs if fs.get('se_off'))
@@ -253,6 +264,7 @@ def main():
         sym = {'n': full_name, 't': 'func', 'sig': sig, 'src': 'CommonLibSSE'}
         if fs['se_off']: sym['s'] = fs['se_off']; sym_seen_se.add(fs['se_off'])
         if fs['ae_off']: sym['a'] = fs['ae_off']; sym_seen_ae.add(fs['ae_off'])
+        if fs.get('vr_off'): sym['v'] = fs['vr_off']
         symbols.append(sym)
 
     # RTTI/VTABLE labels
@@ -260,6 +272,7 @@ def main():
         sym = {'n': lbl['name'], 't': 'label', 'sig': '', 'src': 'CommonLibSSE'}
         if lbl['se_off']: sym['s'] = lbl['se_off']; sym_seen_se.add(lbl['se_off'])
         if lbl['ae_off']: sym['a'] = lbl['ae_off']; sym_seen_ae.add(lbl['ae_off'])
+        if lbl.get('vr_off'): sym['v'] = lbl['vr_off']
         symbols.append(sym)
 
     name_to_sym = {s['n']: s for s in symbols}
@@ -336,9 +349,16 @@ def main():
     se_fallback_json = _json.dumps(se_fallback, separators=(',', ':'))
     ae_fallback_json = _json.dumps(ae_fallback, separators=(',', ':'))
 
-    for version in ('se', 'ae'):
-        fb_json = se_fallback_json if version == 'se' else ae_fallback_json
-        run_version(version, symbols_json, fb_json)
+    n_v = sum(1 for s in primary_symbols if s.get('v'))
+    print('  VR coverage: {} symbols (SE-namespace IDs resolved against vr_db)'.format(n_v))
+
+    fb_for = {
+        'se':  se_fallback_json,
+        'ae':  ae_fallback_json,
+        'svr': '[]',
+    }
+    for version in ('se', 'ae', 'svr'):
+        run_version(version, symbols_json, fb_for[version])
 
 
 if __name__ == '__main__':

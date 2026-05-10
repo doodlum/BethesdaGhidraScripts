@@ -13,6 +13,7 @@ Usage:
 Layout:
   exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
   exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
+  exes/skyrim/vr/SkyrimVR.exe              -> CommonLibImport_VR.py
   exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
 
 All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
