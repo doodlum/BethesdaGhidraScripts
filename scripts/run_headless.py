@@ -13,7 +13,10 @@ Usage:
 Layout:
   exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
   exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
+  exes/f4/og/Fallout4.exe                  -> CommonLibImport_F4_OG.py
+  exes/f4/ng/Fallout4.exe                  -> CommonLibImport_F4_NG.py
   exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
+  exes/f4/vr/Fallout4VR.exe                -> CommonLibImport_F4_VR.py
 
 All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
 """
@@ -55,10 +58,25 @@ SPOT_CHECKS = {
             ("BGSEquipType",      "/CommonLibF4/RE", 10,  1),
             ("Actor_vtbl",        "/CommonLibF4/RE", 800, 100),
         ],
+        # VTABLE_* labels live in the low/mid ID range and resolve in every
+        # F4 address-library DB; RTTI_* labels use IDs >= 4M which only
+        # exist in meh321's AE generation (1.10.984 / 1.11.191).  See the
+        # per-version SPOT_CHECKS_OVERRIDES below.
         'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect", "RTTI_Actor"],
         'functions': [],
         'min_named': 200, 'min_enums': 100, 'min_structs': 500, 'min_syms': 0,
     },
+}
+
+
+# Per-version overlays applied on top of the per-game baseline.  Lets each
+# version override what the spot-check is allowed to assume — for example,
+# CommonLibF4's RTTI labels resolve only against the AE address library, so
+# F4 OG / NG / VR drop them from the expectation list.
+SPOT_CHECKS_OVERRIDES = {
+    ('f4', 'og'): {'labels': ["VTABLE_Actor", "VTABLE_ActiveEffect"]},
+    ('f4', 'ng'): {'labels': ["VTABLE_Actor", "VTABLE_ActiveEffect"]},
+    ('f4', 'vr'): {'labels': ["VTABLE_Actor", "VTABLE_ActiveEffect"]},
 }
 
 
@@ -143,7 +161,10 @@ def _verify(program, game, version):
     fm        = program.getFunctionManager()
     dtm       = program.getDataTypeManager()
     sym_table = program.getSymbolTable()
-    spec = SPOT_CHECKS[game]
+    spec = dict(SPOT_CHECKS[game])
+    override = SPOT_CHECKS_OVERRIDES.get((game, version))
+    if override:
+        spec.update(override)
 
     total_funcs  = fm.getFunctionCount()
     named_funcs  = sum(1 for f in fm.getFunctions(True)

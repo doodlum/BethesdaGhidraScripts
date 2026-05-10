@@ -15,9 +15,12 @@ cd BethesdaGhidraScripts
 2. Drop your game executables into the matching folders (any combination):
 
 ```
-exes/skyrim/se/SkyrimSE.exe      Skyrim SE  (1.5.97)
-exes/skyrim/ae/SkyrimSE.exe      Skyrim AE  (1.6.1170+)
-exes/f4/ae/Fallout4.exe          Fallout 4  (1.11.191)
+exes/skyrim/se/SkyrimSE.exe      Skyrim SE   (1.5.97)
+exes/skyrim/ae/SkyrimSE.exe      Skyrim AE   (1.6.1170+)
+exes/f4/og/Fallout4.exe          Fallout 4 OG (1.10.163) — types only
+exes/f4/ng/Fallout4.exe          Fallout 4 NG (1.10.984)
+exes/f4/ae/Fallout4.exe          Fallout 4 AE (1.11.191)
+exes/f4/vr/Fallout4VR.exe        Fallout 4 VR (1.2.72)  — types only
 ```
 
 3. Run:
@@ -56,10 +59,22 @@ first run.
 |--------------|------------------|------------------|---------------------------|
 | Skyrim SE    | `exes/skyrim/se` | `1-5-97-0`       | `powerof3/CommonLibSSE`   |
 | Skyrim AE    | `exes/skyrim/ae` | `1-6-1170-0`     | `powerof3/CommonLibSSE`   |
-| Fallout 4 AE | `exes/f4/ae`    | `1-11-191-0`     | `libxse/commonlibf4`      |
+| Fallout 4 OG | `exes/f4/og`     | `1-10-163-0`     | `libxse/commonlibf4`      |
+| Fallout 4 NG | `exes/f4/ng`     | `1-10-984-0`     | `libxse/commonlibf4`      |
+| Fallout 4 AE | `exes/f4/ae`     | `1-11-191-0`     | `libxse/commonlibf4`      |
+| Fallout 4 VR | `exes/f4/vr`     | `1-2-72-0` (csv) | `libxse/commonlibf4`      |
 
-You don't need all three. The script detects which executables are present and
-only generates and runs what's needed.
+You don't need all of them. The script detects which executables are present
+and only generates and runs what's needed.
+
+CommonLibF4's IDs sit in the NG/AE namespace (1.10.984 / 1.11.191), so those
+two versions get full type + function symbol coverage.  F4 OG (1.10.163) and
+F4 VR (1.2.72) use disjoint ID namespaces that CommonLibF4 does not
+reference; their generated scripts apply types + vtable structs + enums but
+no function symbols, because looking up an AE-namespace ID against the OG
+or VR DB only ever finds coincidental low-ID matches at the wrong
+addresses.  A separate cross-version port (e.g. masked byte signatures
+from AE) is the right tool to recover symbols on those targets.
 
 ---
 

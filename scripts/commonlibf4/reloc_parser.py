@@ -279,10 +279,10 @@ def _scan_label_files(
                     pass
             if not ids:
                 continue
-            ae_off = addr_lib.get_ae(ids[0])
-            if ae_off:
-                lname = prefix + name
-                labels.setdefault(lname, {'name': lname, 'ae_off': ae_off})
+            id_val = ids[0]
+            ae_off = addr_lib.get_ae(id_val)
+            lname = prefix + name
+            labels.setdefault(lname, {'name': lname, 'ae_off': ae_off, 'id': id_val})
 
     # --- VTABLE (std::array<REL::ID, N> using REL::ID() constructor) ---
     vtable_path = os.path.join(re_include, 'IDs_VTABLE.h')
@@ -297,11 +297,9 @@ def _scan_label_files(
             id_calls = [int(x) for x in _REL_ID_CALL_RE.findall(m.group(3))]
             for idx, id_ in enumerate(id_calls):
                 ae_off = addr_lib.get_ae(id_)
-                if not ae_off:
-                    continue
                 suffix = '' if idx == 0 else '_{}'.format(idx + 1)
                 lname = 'VTABLE_' + name + suffix
-                labels.setdefault(lname, {'name': lname, 'ae_off': ae_off})
+                labels.setdefault(lname, {'name': lname, 'ae_off': ae_off, 'id': id_})
 
     return list(labels.values())
 
@@ -357,8 +355,6 @@ def _scan_header(
             continue
 
         ae_off = addr_lib.get_ae(ng_id)
-        if not ae_off:
-            continue
 
         sym_class = ctx2.full_class
         if sym_class and sym_class.startswith(_ns_pre):
@@ -378,6 +374,7 @@ def _scan_header(
             'ret': '', 'params': '',
             'is_static': False,
             'ae_off': ae_off,
+            'id': ng_id,
         })
 
     return func_syms, static_methods

@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
 """
-Parse libxse/commonlibf4 headers and generate the Ghidra import script
-for Fallout 4 AE (1.11.191).
+Parse libxse/commonlibf4 headers and generate Ghidra import scripts for
+Fallout 4 OG / NG / AE / VR.
 
 Pipeline:
   Types:        core/clang_types.py  (clang AST dump + record layouts)
   Relocations:  reloc_parser.py      (IDs.h map + ID::Class::Method references)
-  Address lib:  address_library.py   (1-11-191 AE)
+  Address lib:  address_library.py   (OG / NG / AE / VR)
   Fallback:     ida_names.py         (extras/IDAImportNames_1.11.191.0.py)
   Script gen:   core/ghidra_import_gen.py
 
 Generates:
-  ghidrascripts/CommonLibImport_F4_AE.py
+  ghidrascripts/CommonLibImport_F4_OG.py   (types/labels only)
+  ghidrascripts/CommonLibImport_F4_NG.py   (types + NG-resolved symbols)
+  ghidrascripts/CommonLibImport_F4_AE.py   (types + AE-resolved symbols)
+  ghidrascripts/CommonLibImport_F4_VR.py   (types/labels only)
+
+Symbol resolution
+-----------------
+CommonLibF4 IDs are in the NG/AE namespace (1.10.984 / 1.11.191) — those
+two DBs share IDs with ~59% overlap, so a single ID resolves against both.
+OG (1.10.163) and VR (1.2.72) use entirely disjoint ID namespaces that
+CommonLibF4 does not reference, so looking up an AE-namespace ID against
+the OG or VR DB only finds coincidental low-ID matches that point at the
+wrong functions.  We deliberately do NOT resolve against OG/VR; those
+scripts get types + RTTI/VTABLE labels only.  Cross-version function-name
+porting for OG/VR is out of scope here (a separate post-pass like masked
+byte-signature matching from AE would be the right tool).
 """
 
 import os
@@ -34,7 +49,7 @@ ADDRLIB_DIR       = os.path.join(PROJECT_DIR, 'addresslibrary', 'f4')
 
 # A descriptor that ends in a single-letter uppercase qualified path is an
 # uninstantiated template parameter (``T``, ``K``, ``V``...).  Signatures
-# containing such tokens can't point at ``the exact correct type`` and are
+# containing such tokens can't point at the exact correct type and are
 # dropped instead of being applied with a stale ``RE::T`` placeholder.
 _UNRESOLVED_TPARAM_RE = re.compile(r'(?:^|[:>])([A-Z])(?=$|\W)')
 
@@ -86,6 +101,17 @@ def _enrich_symbols(symbols_list, structs):
         print(f'Skipped {skipped} symbols with uninstantiated template params in signature')
 
 
+# Per-version output config.  OG/VR have no fallback symbol pool — their
+# IDs are in disjoint namespaces, so an AE-namespace fallback would
+# poison the import with mislabeled functions.
+F4_TARGETS = (
+    ('f4_og', 'CommonLibImport_F4_OG.py', '[]'),
+    ('f4_ng', 'CommonLibImport_F4_NG.py', '[]'),
+    ('f4_ae', 'CommonLibImport_F4_AE.py', None),   # filled in with IDA fallback
+    ('f4_vr', 'CommonLibImport_F4_VR.py', '[]'),
+)
+
+
 def main():
     import json as _json
 
@@ -98,10 +124,12 @@ def main():
         generate_script,
     )
 
-    # --- Address library ---
+    # --- Address library (OG / NG / AE / VR) ---
     addr_lib = F4AddressLibrary()
     addr_lib.load_all(ADDRLIB_DIR)
-    print(f'AE address library: {len(addr_lib.ae_db):,} entries')
+    print(f'Address libraries — OG: {len(addr_lib.og_db):,}, '
+          f'NG: {len(addr_lib.ng_db):,}, AE: {len(addr_lib.ae_db):,}, '
+          f'VR: {len(addr_lib.vr_db):,}')
 
     # --- Relocation scan ---
     print('\n=== Collecting symbols via relocation parser ===')
@@ -116,17 +144,30 @@ def main():
             if (fs['class_'], fs['name']) in static_methods:
                 fs['is_static'] = True
 
-    # Build unified symbol list with 'a' = AE offset
+    # CommonLibF4 IDs are in the NG/AE namespace.  Resolve each ID against
+    # both NG and AE; the 'a' key stays as AE for backward compatibility.
+    def _resolve(sym, id_val):
+        if not id_val:
+            return
+        ng = addr_lib.ng_db.get(id_val)
+        ae = addr_lib.ae_db.get(id_val)
+        if ng: sym['ng'] = ng
+        if ae: sym['a']  = ae
+
     symbols = []
     for fs in func_syms:
         full_name = '{}::{}'.format(fs['class_'], fs['name']) if fs['class_'] else fs['name']
         sym = {'n': full_name, 't': 'func', 'sig': '', 'src': 'CommonLibF4'}
-        if fs.get('ae_off'): sym['a'] = fs['ae_off']
+        if fs.get('id'):
+            sym['id'] = fs['id']
+        _resolve(sym, fs.get('id'))
         symbols.append(sym)
 
     for lbl in label_syms:
         sym = {'n': lbl['name'], 't': 'label', 'sig': '', 'src': 'CommonLibF4'}
-        if lbl.get('ae_off'): sym['a'] = lbl['ae_off']
+        if lbl.get('id'):
+            sym['id'] = lbl['id']
+        _resolve(sym, lbl.get('id'))
         symbols.append(sym)
 
     # Normalise __ -> ::
@@ -134,8 +175,10 @@ def main():
         if '__' in s['n']:
             s['n'] = re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
 
-    ae_syms = [s for s in symbols if s.get('a')]
-    print(f'\nTotal symbols: {len(symbols)}  (AE coverage: {len(ae_syms)})')
+    n_ng = sum(1 for s in symbols if 'ng' in s)
+    n_ae = sum(1 for s in symbols if 'a'  in s)
+    print(f'\nTotal symbols: {len(symbols)} (NG: {n_ng}, AE: {n_ae}) '
+          f'— OG/VR get types + labels only (disjoint ID namespaces)')
 
     # --- Type parsing ---
     print('\n=== Parsing types (clang AST) ===')
@@ -172,7 +215,7 @@ def main():
     _flatten_structs(structs)
     _apply_secondary_vtable_typing(structs)
 
-    # --- IDAImportNames_1.11.191.0.py fallback symbols (already AE) ---
+    # --- IDAImportNames_1.11.191.0.py fallback symbols (AE only) ---
     print('\n=== Loading IDAImportNames_1.11.191.0.py fallback symbols ===')
     from ida_names import load_ida_import_names as _load_ida
     f4_ida_path = os.path.join(PROJECT_DIR, 'extras', 'IDAImportNames_1.11.191.0.py')
@@ -188,20 +231,24 @@ def main():
     print(f'IDA fallback symbols: {len(ida_fallback):,} loaded '
           f'({not_in_primary:,} not in primary)')
 
-    fallback_json = _json.dumps(ida_fallback, separators=(',', ':'))
+    fallback_json_ae = _json.dumps(ida_fallback, separators=(',', ':'))
+    symbols_json     = _json.dumps(symbols, separators=(',', ':'))
 
-    # --- Generate AE script ---
-    print('\nGenerating Ghidra script...')
-    output_path = os.path.join(OUTPUT_DIR, 'CommonLibImport_F4_AE.py')
-    n_enums, n_structs = generate_script(
-        enums, structs, vtable_structs, output_path,
-        version='f4_ae',
-        symbols_json=_json.dumps(symbols, separators=(',', ':')),
-        fallback_symbols_json=fallback_json,
-        template_source=template_source,
-        project_name='CommonLibF4',
-    )
-    print(f'  CommonLibImport_F4_AE.py: {n_enums} enums, {n_structs} structs')
+    # --- Generate per-version scripts ---
+    print('\nGenerating Ghidra scripts...')
+    for ver, fname, fb_json in F4_TARGETS:
+        if fb_json is None:
+            fb_json = fallback_json_ae
+        output_path = os.path.join(OUTPUT_DIR, fname)
+        n_enums, n_structs = generate_script(
+            enums, structs, vtable_structs, output_path,
+            version=ver,
+            symbols_json=symbols_json,
+            fallback_symbols_json=fb_json,
+            template_source=template_source,
+            project_name='CommonLibF4',
+        )
+        print(f'  {fname}: {n_enums} enums, {n_structs} structs')
 
 
 if __name__ == '__main__':
