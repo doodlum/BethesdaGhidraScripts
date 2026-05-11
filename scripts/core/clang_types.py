@@ -635,8 +635,25 @@ def _parse_ast_dump(text, re_include_path, root_ns='RE', category_prefix='/Commo
                         ret, params = _parse_method_sig(method_sig, root_ns)
                         if is_virtual:
                             cls['has_vtable'] = True
-                            if method_name not in cls['vmethods']:
+                            existing = cls['vmethods'].get(method_name)
+                            if existing is None:
                                 cls['vmethods'][method_name] = (ret, params)
+                            elif existing != (ret, params):
+                                # Distinct C++ overload sharing the leaf name
+                                # gets its own vtable slot.  Disambiguate the
+                                # vmethods key by appending an index so the
+                                # downstream slot count matches the binary's
+                                # vtable layout — without this every overloaded
+                                # base virtual shifts subsequent slots one
+                                # earlier than the binary.  The alias is
+                                # stripped back to the leaf name when emitting
+                                # the slot label in _compute_vfuncs.
+                                idx = 2
+                                while (method_name + '__overload_' + str(idx)) in cls['vmethods']:
+                                    idx += 1
+                                cls['vmethods'][method_name + '__overload_' + str(idx)] = (ret, params)
+                                cls.setdefault('_overload_aliases', {})[
+                                    method_name + '__overload_' + str(idx)] = method_name
                         if method_name not in cls['methods']:
                             is_static = ' static' in content
                             cls['methods'][method_name] = (ret, params, is_static)
@@ -969,6 +986,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
                 'has_vtable': layout['has_vtable'] or ast['has_vtable'],
                 'vmethods': ast.get('vmethods', {}),
                 'methods': ast.get('methods', {}),
+                '_overload_aliases': dict(ast.get('_overload_aliases', {})),
             }
         else:
             structs[key] = {
@@ -981,6 +999,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
                 'has_vtable': ast['has_vtable'],
                 'vmethods': ast.get('vmethods', {}),
                 'methods': ast.get('methods', {}),
+                '_overload_aliases': dict(ast.get('_overload_aliases', {})),
             }
 
     # Add layout-only types (templates, types not in AST class list)
@@ -1002,6 +1021,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
         # generation and signature application work for instantiations too.
         vmethods = {}
         methods  = {}
+        aliases  = {}
         has_vtbl = ldata['has_vtable']
         if '<' in lname:
             tmpl_base = _strip_outer_template(lname)
@@ -1011,6 +1031,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
             if tmpl_def:
                 vmethods = dict(tmpl_def.get('vmethods', {}))
                 methods  = dict(tmpl_def.get('methods',  {}))
+                aliases  = dict(tmpl_def.get('_overload_aliases', {}))
                 has_vtbl = has_vtbl or tmpl_def.get('has_vtable', False)
 
         structs[lname] = {
@@ -1024,6 +1045,7 @@ def _merge_ast_and_layouts(ast_classes, layouts, re_include_path,
             'has_vtable': has_vtbl,
             'vmethods': vmethods,
             'methods':  methods,
+            '_overload_aliases': aliases,
         }
 
     return structs
@@ -1139,7 +1161,14 @@ def _compute_vfuncs(structs, root_ns='RE'):
         intro = [n for n in st.get('vmethods', {}) if n not in primary_base_names]
         if not intro:
             continue
-        st['vfuncs'] = [(mname, (base_start + i) * 8) for i, mname in enumerate(intro)]
+        # Strip overload-disambiguation suffixes (Name__overload_N) before
+        # emitting slot labels.  The alias only exists so the vtable slot
+        # count matches the binary; the user-visible name is the leaf name.
+        aliases = st.get('_overload_aliases', {})
+        st['vfuncs'] = [
+            (aliases.get(mname, mname), (base_start + i) * 8)
+            for i, mname in enumerate(intro)
+        ]
         count += 1
 
     print('Computed vtable slots for {} structs from AST'.format(count))
@@ -2012,6 +2041,8 @@ def _propagate_template_methods(structs, ast_classes, root_ns='RE'):
             continue
         if not st.get('vmethods'):
             st['vmethods'] = dict(tmpl_def.get('vmethods', {}))
+            if tmpl_def.get('_overload_aliases'):
+                st['_overload_aliases'] = dict(tmpl_def.get('_overload_aliases', {}))
         if not st.get('methods'):
             st['methods']  = dict(tmpl_def.get('methods', {}))
         if tmpl_def.get('has_vtable'):
