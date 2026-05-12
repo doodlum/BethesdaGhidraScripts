@@ -68,13 +68,24 @@ You don't need all of them. The script detects which executables are present
 and only generates and runs what's needed.
 
 CommonLibF4's IDs sit in the NG/AE namespace (1.10.984 / 1.11.191), so those
-two versions get full type + function symbol coverage.  F4 OG (1.10.163) and
-F4 VR (1.2.72) use disjoint ID namespaces that CommonLibF4 does not
-reference; their generated scripts apply types + vtable structs + enums but
-no function symbols, because looking up an AE-namespace ID against the OG
-or VR DB only ever finds coincidental low-ID matches at the wrong
-addresses.  A separate cross-version port (e.g. masked byte signatures
-from AE) is the right tool to recover symbols on those targets.
+two versions get full type + function symbol coverage from the address
+library alone.  F4 OG (1.10.163) and F4 VR (1.2.72) use disjoint ID
+namespaces that CommonLibF4 does not reference; the address library can't
+transfer names directly because looking up an AE-namespace ID against the
+OG or VR DB only finds coincidental low-ID matches at wrong addresses.
+
+To get function names onto OG and VR anyway, the F4 pipeline runs a
+cross-version byte-signature port (`scripts/commonlibf4/run_bytesig_port.py`)
+after script generation.  Anchored at AE (or NG when AE is absent), it scans
+each AE-named function's first 32 bytes for an exact, unique match in the
+OG/VR binary; unmatched names get a 48-byte masked retry that wildcards
+rel32 and rip-relative operands so cross-build jump targets stop confusing
+the match.  Matched (name, target_rva) pairs are merged back into the
+generated `CommonLibImport_F4_OG.py` / `_VR.py` scripts so they apply
+function names alongside the types when the script runs.
+
+The byte-sig port only runs when both AE (or NG) and the target binary are
+present in `exes/f4/`; without them, OG/VR fall back to types-only coverage.
 
 ---
 

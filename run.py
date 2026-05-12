@@ -41,7 +41,16 @@ GHIDRA_RELEASES_URL    = "https://api.github.com/repos/NationalSecurityAgency/gh
 STEAMLESS_RELEASES_URL = "https://api.github.com/repos/atom0s/Steamless/releases/latest"
 LLVM_RELEASES_URL      = "https://api.github.com/repos/llvm/llvm-project/releases/latest"
 
-REQUIRED_PACKAGES = {"pdbparse": "pdbparse", "pyghidra": "pyghidra"}
+REQUIRED_PACKAGES = {
+    "pdbparse": "pdbparse",
+    "pyghidra": "pyghidra",
+    # Used by scripts/commonlibf4/run_bytesig_port.py for the masked-retry
+    # pass that wildcards rel32 / rip-rel operands on cross-build matches
+    # (AE -> OG / VR).  Without them the byte-sig port still works for
+    # exact 32-byte matches; masked Pass 2 is skipped with a notice.
+    "capstone": "capstone",
+    "numpy":    "numpy",
+}
 
 API_HEADERS = {
     "Accept": "application/vnd.github.v3+json",
@@ -392,17 +401,27 @@ def generate_scripts(games):
     _ensure_clang()
 
     if "skyrim" in games:
-        print("  Skyrim SE / AE ...")
+        print("  Skyrim SE / AE / VR ...")
         subprocess.run(
             [sys.executable,
              str(SCRIPTS_DIR / "commonlibsse" / "parse_commonlib_types.py")],
             cwd=str(REPO_DIR), check=True)
     if "f4" in games:
-        print("  Fallout 4 AE ...")
+        print("  Fallout 4 OG / NG / AE / VR ...")
         subprocess.run(
             [sys.executable,
              str(SCRIPTS_DIR / "commonlibf4" / "parse_commonlib_types.py")],
             cwd=str(REPO_DIR), check=True)
+        # F4 OG and VR use disjoint ID namespaces from NG/AE — CommonLibF4
+        # IDs don't resolve there.  If AE (or NG) and OG/VR binaries are
+        # both present, port AE-known function names across via masked
+        # byte-signature matching so OG/VR scripts apply function names
+        # instead of types-only.
+        print("  Fallout 4 cross-version byte-signature port ...")
+        subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_DIR / "commonlibf4" / "run_bytesig_port.py")],
+            cwd=str(REPO_DIR), check=False)
 
 
 # -- Headless ----------------------------------------------------------

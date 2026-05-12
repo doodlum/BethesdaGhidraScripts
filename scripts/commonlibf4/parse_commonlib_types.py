@@ -18,15 +18,17 @@ Generates:
 
 Symbol resolution
 -----------------
-CommonLibF4 IDs are in the NG/AE namespace (1.10.984 / 1.11.191) — those
-two DBs share IDs with ~59% overlap, so a single ID resolves against both.
-OG (1.10.163) and VR (1.2.72) use entirely disjoint ID namespaces that
-CommonLibF4 does not reference, so looking up an AE-namespace ID against
-the OG or VR DB only finds coincidental low-ID matches that point at the
-wrong functions.  We deliberately do NOT resolve against OG/VR; those
-scripts get types + RTTI/VTABLE labels only.  Cross-version function-name
-porting for OG/VR is out of scope here (a separate post-pass like masked
-byte-signature matching from AE would be the right tool).
+CommonLibF4's IDs are managed by meh321 with a single ID space across all
+F4 patch revisions — the OG / NG / AE / VR address libraries differ only
+in per-version offsets, not in which IDs exist.  ~83% of
+CommonLibF4-referenced IDs resolve in OG and VR; the rest were dropped in
+the older patches or added later.  Each symbol carries up to four offset
+fields (`og`, `ng`, `a`, `v`) and the per-version script picks the one
+matching its build.
+
+Function-name coverage for IDs that exist only in AE (the remaining 17%)
+is recovered post-generation via masked byte-signature porting — see
+`run_bytesig_port.py`.
 """
 
 import os
@@ -144,15 +146,24 @@ def main():
             if (fs['class_'], fs['name']) in static_methods:
                 fs['is_static'] = True
 
-    # CommonLibF4 IDs are in the NG/AE namespace.  Resolve each ID against
-    # both NG and AE; the 'a' key stays as AE for backward compatibility.
+    # CommonLibF4's IDs are managed by meh321 with a single ID space across
+    # all F4 patch revisions — the OG / NG / AE / VR address libraries differ
+    # only in their per-version offsets, not in which IDs exist.  In
+    # practice ~83% of CommonLibF4-referenced IDs resolve in OG and VR
+    # (the older patches dropped some helpers and gained others), so we
+    # look up every symbol's ID against all four DBs.  The 'a' key stays
+    # as AE for backward compatibility with the prior generator.
     def _resolve(sym, id_val):
         if not id_val:
             return
+        og = addr_lib.og_db.get(id_val)
         ng = addr_lib.ng_db.get(id_val)
         ae = addr_lib.ae_db.get(id_val)
+        vr = addr_lib.vr_db.get(id_val)
+        if og: sym['og'] = og
         if ng: sym['ng'] = ng
         if ae: sym['a']  = ae
+        if vr: sym['v']  = vr
 
     symbols = []
     for fs in func_syms:
@@ -175,10 +186,12 @@ def main():
         if '__' in s['n']:
             s['n'] = re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
 
+    n_og = sum(1 for s in symbols if 'og' in s)
     n_ng = sum(1 for s in symbols if 'ng' in s)
     n_ae = sum(1 for s in symbols if 'a'  in s)
-    print(f'\nTotal symbols: {len(symbols)} (NG: {n_ng}, AE: {n_ae}) '
-          f'— OG/VR get types + labels only (disjoint ID namespaces)')
+    n_vr = sum(1 for s in symbols if 'v'  in s)
+    print(f'\nTotal symbols: {len(symbols)} '
+          f'(OG: {n_og}, NG: {n_ng}, AE: {n_ae}, VR: {n_vr})')
 
     # --- Type parsing ---
     print('\n=== Parsing types (clang AST) ===')
