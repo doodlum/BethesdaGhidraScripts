@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import struct
 from typing import Dict, List, Optional, Tuple
 
 
@@ -386,6 +387,7 @@ from ghidra.program.model.data import (
     FunctionDefinitionDataType, ParameterDefinitionImpl,
 )
 import re
+import struct
 
 dtm = currentProgram.getDataTypeManager()
 CONFLICT = DataTypeConflictHandler.REPLACE_HANDLER
@@ -900,12 +902,23 @@ def _import_symbols():
             if s['t'] == 'label':
                 cu = currentProgram.getListing().getCodeUnitAt(addr)
                 if cu:
+                    parts = []
+                    se_id = s.get('si')
+                    ae_id = s.get('ai')
+                    if se_id and ae_id:
+                        parts.append('RELOCATION_ID(' + str(se_id) + ', ' + str(ae_id) + ')')
+                    elif se_id:
+                        parts.append('REL::ID(' + str(se_id) + ')')
+                    elif ae_id:
+                        parts.append('REL::ID(' + str(ae_id) + ')')
                     if final_name.startswith('RTTI_'):
-                        cu.setComment(0, 'Source: ' + PROJECT_NAME + ' (Offsets_RTTI.h)')
+                        parts.append('Source: ' + PROJECT_NAME + ' (Offsets_RTTI.h)')
                     elif final_name.startswith('VTABLE_'):
-                        cu.setComment(0, 'Source: ' + PROJECT_NAME + ' (Offsets_VTABLE.h)')
+                        parts.append('Source: ' + PROJECT_NAME + ' (Offsets_VTABLE.h)')
                     elif s.get('src'):
-                        cu.setComment(0, 'Source: ' + s['src'])
+                        parts.append('Source: ' + s['src'])
+                    if parts:
+                        cu.setComment(0, '\\n'.join(parts))
         except: pass
 
         if s['t'] == 'func':
@@ -987,18 +1000,53 @@ def _import_symbols():
     print('Signatures applied: ' + str(count_sig) + ', failed: ' + str(count_sig_fail))
 
 
+def _build_rva_to_id():
+    import base64 as _b64
+    rva_to_id = {}
+    if _ADDRLIB_B64:
+        blob = _b64.b64decode(_ADDRLIB_B64)
+        for i in range(0, len(blob), 8):
+            rva, rid = struct.unpack_from('<II', blob, i)
+            rva_to_id[rva] = rid
+    else:
+        version_key = 's' if VERSION == 'se' else 'a'
+        id_key = 'si' if VERSION == 'se' else 'ai'
+        for s in SYMBOLS:
+            rva = s.get(version_key)
+            rid = s.get(id_key)
+            if rva and rid:
+                rva_to_id[rva] = rid
+        if FALLBACK_SYMBOLS:
+            for s in FALLBACK_SYMBOLS:
+                rva = s.get(version_key)
+                rid = s.get(id_key)
+                if rva and rid and rva not in rva_to_id:
+                    rva_to_id[rva] = rid
+    return rva_to_id
+
+
+def _format_id_comment(rva, rva_to_id):
+    rid = rva_to_id.get(rva)
+    if rid is None:
+        return None
+    return 'REL::ID(' + str(rid) + ')'
+
+
 def _import_vtable_names():
     monitor.setMessage('Naming virtual functions from vtable addresses...')
     fm = currentProgram.getFunctionManager()
     sym_table = currentProgram.getSymbolTable()
     memory = currentProgram.getMemory()
     ptr_size = currentProgram.getDefaultPointerSize()
+    base_addr = currentProgram.getImageBase()
+    rva_to_id = _build_rva_to_id()
     named_vfuncs = 0
     vtbl_not_found = 0
     vtbl_found = 0
     read_fail = 0
     no_func = 0
     already_named = 0
+    id_comments_added = 0
     for vt in VTABLES:
         vname, class_full_name, vtbl_size, category, slots = vt
         class_short = class_full_name.split('::')[-1]
@@ -1030,17 +1078,31 @@ def _import_vtable_names():
                     continue
                 curr = func.getName()
                 was_named = not (curr.startswith('FUN_') or curr.startswith('sub_'))
+                func_rva = func_addr.getOffset() - base_addr.getOffset()
                 if was_named:
                     already_named += 1
+                    cu = currentProgram.getListing().getCodeUnitAt(func_addr)
+                    if cu:
+                        existing = cu.getComment(0) or ''
+                        if 'REL::ID' not in existing and 'RELOCATION_ID' not in existing:
+                            id_str = _format_id_comment(func_rva, rva_to_id)
+                            if id_str:
+                                new_comment = id_str + '\\n' + existing if existing else id_str
+                                cu.setComment(0, new_comment)
+                                id_comments_added += 1
                 else:
+                    comment_parts = []
+                    id_str = _format_id_comment(func_rva, rva_to_id)
+                    if id_str:
+                        comment_parts.append(id_str)
+                        id_comments_added += 1
+                    comment_parts.append('VTABLE ' + class_full_name + '::' + slot_name)
+                    comment_parts.append('Slot offset: +0x{:X}'.format(slot_off))
+                    comment_parts.append('Source: ' + PROJECT_NAME + ' vtable walk')
                     func.setName(class_short + '::' + slot_name, SourceType.USER_DEFINED)
                     cu = currentProgram.getListing().getCodeUnitAt(func_addr)
                     if cu:
-                        cu.setComment(0, (
-                            'VTABLE ' + class_full_name + '::' + slot_name + '\\n' +
-                            'Slot offset: +0x{:X}\\n'.format(slot_off) +
-                            'Source: ' + PROJECT_NAME + ' vtable walk'
-                        ))
+                        cu.setComment(0, '\\n'.join(comment_parts))
                     named_vfuncs += 1
                 if slot_ret is not None and slot_params is not None:
                     has_sig = func.getSignature().getReturnType().getClass().getSimpleName() != 'DefaultDataType'
@@ -1065,8 +1127,8 @@ def _import_vtable_names():
             except Exception:
                 read_fail += 1
     print('Named {} virtual functions from vtable addresses'.format(named_vfuncs))
-    print('  vtbl_found={} vtbl_not_found={} read_fail={} no_func={} already_named={}'.format(
-        vtbl_found, vtbl_not_found, read_fail, no_func, already_named))
+    print('  vtbl_found={} vtbl_not_found={} read_fail={} no_func={} already_named={} id_comments={}'.format(
+        vtbl_found, vtbl_not_found, read_fail, no_func, already_named, id_comments_added))
 
     # Second pass: walk VTABLE_ labels without struct definitions
     handled_labels = set()
@@ -1120,13 +1182,17 @@ def _import_vtable_names():
                         continue
                     func_name = 'Func{}{}'.format(slot_idx, sec_suffix)
                     func.setName(class_short + '::' + func_name, SourceType.USER_DEFINED)
+                    func_rva = func_addr.getOffset() - base_addr.getOffset()
                     cu = currentProgram.getListing().getCodeUnitAt(func_addr)
                     if cu:
-                        cu.setComment(0, (
-                            'VTABLE ' + class_short + '::' + func_name + '\\n' +
-                            'Slot offset: +0x{:X}\\n'.format((slot_idx - 1) * ptr_size) +
-                            'Source: ' + PROJECT_NAME + ' vtable walk (unnamed)'
-                        ))
+                        comment_parts = []
+                        id_str = _format_id_comment(func_rva, rva_to_id)
+                        if id_str:
+                            comment_parts.append(id_str)
+                        comment_parts.append('VTABLE ' + class_short + '::' + func_name)
+                        comment_parts.append('Slot offset: +0x{:X}'.format((slot_idx - 1) * ptr_size))
+                        comment_parts.append('Source: ' + PROJECT_NAME + ' vtable walk (unnamed)')
+                        cu.setComment(0, '\\n'.join(comment_parts))
                     unnamed_named += 1
                 except Exception:
                     break
@@ -1166,17 +1232,24 @@ def _import_fallback_symbols():
             else:
                 symbol_table.createLabel(addr, sname, SourceType.USER_DEFINED)
 
+            comment_parts = []
+            se_id = s.get('si')
+            ae_id = s.get('ai')
+            if se_id and ae_id:
+                comment_parts.append('RELOCATION_ID(' + str(se_id) + ', ' + str(ae_id) + ')')
+            elif se_id:
+                comment_parts.append('REL::ID(' + str(se_id) + ')')
+            elif ae_id:
+                comment_parts.append('REL::ID(' + str(ae_id) + ')')
             src = s.get('src', '')
             if src == 'skyrimae.rename':
-                comment = 'Source: AE rename database (fallback)'
+                comment_parts.append('Source: AE rename database (fallback)')
             elif src:
-                comment = 'Source: ' + src + ' (fallback)'
-            else:
-                comment = ''
-            if comment:
+                comment_parts.append('Source: ' + src + ' (fallback)')
+            if comment_parts:
                 cu = currentProgram.getListing().getCodeUnitAt(addr)
                 if cu:
-                    cu.setComment(0, comment)
+                    cu.setComment(0, '\\n'.join(comment_parts))
             count_applied += 1
         except:
             pass
@@ -1204,6 +1277,7 @@ def generate_script(
     project_name: str = 'CommonLibSSE',
     script_header: Optional[str] = None,
     script_footer: Optional[str] = None,
+    address_lib_map: Optional[Dict[int, int]] = None,
 ) -> Tuple[int, int]:
     """Generate a self-contained Ghidra import script.
 
@@ -1223,6 +1297,9 @@ def generate_script(
         Human-readable project name for comment strings (default 'CommonLibSSE').
     script_header, script_footer:
         Override the default Ghidra Jython header/footer.
+    address_lib_map:
+        Optional dict of {rva: id} from the address library. Encoded as a
+        base64 binary blob for reverse RVA→ID lookups at import time.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -1335,6 +1412,20 @@ def generate_script(
             fallback_symbols_json = json.dumps(_fb, separators=(',', ':'))
 
     lines.append('FALLBACK_SYMBOLS = ' + fallback_symbols_json)
+    lines.append('')
+
+    # Address library RVA→ID reverse map (base64 binary blob)
+    if address_lib_map:
+        import base64 as _b64
+        pairs = sorted(address_lib_map.items())
+        blob = b''.join(struct.pack('<II', rva, rid) for rva, rid in pairs)
+        b64 = _b64.b64encode(blob).decode('ascii')
+        lines.append('_ADDRLIB_B64 = (')
+        for i in range(0, len(b64), 120):
+            lines.append("    '" + b64[i:i+120] + "'")
+        lines.append(')')
+    else:
+        lines.append("_ADDRLIB_B64 = ''")
     lines.append('')
 
     # Template type map

@@ -146,6 +146,16 @@ def main():
         if '__' in s['n']:
             s['n'] = re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
 
+    # Attach address-library IDs via reverse lookup
+    ae_rva_to_id = {v: k for k, v in addr_lib.ae_db.items()}
+    id_count = 0
+    for s in symbols:
+        ae_id = ae_rva_to_id.get(s.get('a'))
+        if ae_id is not None:
+            s['ai'] = ae_id
+            id_count += 1
+    print(f'Attached address-library IDs to {id_count} of {len(symbols)} symbols')
+
     ae_syms = [s for s in symbols if s.get('a')]
     print(f'\nTotal symbols: {len(symbols)}  (AE coverage: {len(ae_syms)})')
 
@@ -192,10 +202,13 @@ def main():
     print(f'IDA names: {len(ida_names):,} entries')
 
     primary_rvas = {s['a'] for s in symbols if s.get('a')}
-    ida_fallback = [
-        {'n': name, 't': 'func', 'sig': '', 'a': rva, 'src': 'IDAImportNames'}
-        for rva, name in ida_names.items()
-    ]
+    ida_fallback = []
+    for rva, name in ida_names.items():
+        entry = {'n': name, 't': 'func', 'sig': '', 'a': rva, 'src': 'IDAImportNames'}
+        ae_id = ae_rva_to_id.get(rva)
+        if ae_id is not None:
+            entry['ai'] = ae_id
+        ida_fallback.append(entry)
     not_in_primary = sum(1 for s in ida_fallback if s['a'] not in primary_rvas)
     print(f'IDA fallback symbols: {len(ida_fallback):,} loaded '
           f'({not_in_primary:,} not in primary)')
@@ -212,6 +225,7 @@ def main():
         fallback_symbols_json=fallback_json,
         template_source=template_source,
         project_name='CommonLibF4',
+        address_lib_map=ae_rva_to_id,
     )
     print(f'  CommonLibImport_F4_AE.py: {n_enums} enums, {n_structs} structs')
 

@@ -150,7 +150,7 @@ def _enrich_symbols_with_sigs(symbols_json, structs):
     return _json.dumps(symbols, separators=(',', ':'))
 
 
-def run_version(version, symbols_json, fallback_symbols_json='[]'):
+def run_version(version, symbols_json, fallback_symbols_json='[]', address_lib_map=None):
     from clang_types import collect_types, _setup_include_paths
 
     cfg = VERSIONS[version]
@@ -182,7 +182,7 @@ def run_version(version, symbols_json, fallback_symbols_json='[]'):
     _apply_secondary_vtable_typing(structs)
 
     print('Generating Ghidra script...')
-    n_enums, n_structs = generate_script(enums, structs, vtable_structs, output_path, version, symbols_json, fallback_symbols_json, template_source)
+    n_enums, n_structs = generate_script(enums, structs, vtable_structs, output_path, version, symbols_json, fallback_symbols_json, template_source, address_lib_map=address_lib_map)
     print('Output: {} ({} enums, {} structs)'.format(output_path, n_enums, n_structs))
 
 
@@ -343,6 +343,21 @@ def main():
         if '__' in s['n']:
             s['n'] = re.sub(r':{3,}', '::', s['n'].replace('__', '::'))
 
+    # Attach address-library IDs to every symbol via reverse lookup
+    se_rva_to_id = {v: k for k, v in addr_lib.se_db.items()}
+    ae_rva_to_id = {v: k for k, v in addr_lib.ae_db.items()}
+    id_count = 0
+    for s in symbols:
+        se_id = se_rva_to_id.get(s.get('s'))
+        ae_id = ae_rva_to_id.get(s.get('a'))
+        if se_id is not None:
+            s['si'] = se_id
+        if ae_id is not None:
+            s['ai'] = ae_id
+        if se_id is not None or ae_id is not None:
+            id_count += 1
+    print('Attached address-library IDs to {} of {} symbols'.format(id_count, len(symbols)))
+
     funcs = [s for s in symbols if s['t'] == 'func']
     with_sig = len([s for s in funcs if s.get('sig')])
     labels_count = len([s for s in symbols if s['t'] == 'label'])
@@ -366,9 +381,13 @@ def main():
     se_fallback_json = _json.dumps(se_fallback, separators=(',', ':'))
     ae_fallback_json = _json.dumps(ae_fallback, separators=(',', ':'))
 
+    se_addrlib = {v: k for k, v in addr_lib.se_db.items()} if addr_lib.se_db else None
+    ae_addrlib = {v: k for k, v in addr_lib.ae_db.items()} if addr_lib.ae_db else None
+
     for version in ('se', 'ae'):
         fb_json = se_fallback_json if version == 'se' else ae_fallback_json
-        run_version(version, symbols_json, fb_json)
+        addrlib = se_addrlib if version == 'se' else ae_addrlib
+        run_version(version, symbols_json, fb_json, address_lib_map=addrlib)
 
 
 if __name__ == '__main__':
