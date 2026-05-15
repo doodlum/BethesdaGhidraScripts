@@ -89,7 +89,7 @@ def _enrich_symbols(symbols_list, structs):
 def main():
     import json as _json
 
-    from address_library import F4AddressLibrary
+    from address_library import F4AddressLibrary, get_pe_version
     from ghidra_import_gen import (
         build_vtable_structs as _build_vtable_structs,
         inject_vtable_fields as _inject_vtable_fields,
@@ -98,9 +98,21 @@ def main():
         generate_script,
     )
 
+    # --- Detect exe version ---
+    ae_ver = None
+    f4_exe_dir = os.path.join(PROJECT_DIR, 'exes', 'f4', 'ae')
+    if os.path.isdir(f4_exe_dir):
+        for fname in os.listdir(f4_exe_dir):
+            if fname.lower().endswith('.exe') and 'unpacked' not in fname.lower():
+                v = get_pe_version(os.path.join(f4_exe_dir, fname))
+                if v:
+                    print(f'  Detected F4 AE exe version: {".".join(str(x) for x in v)}')
+                    ae_ver = v
+                    break
+
     # --- Address library ---
     addr_lib = F4AddressLibrary()
-    addr_lib.load_all(ADDRLIB_DIR)
+    addr_lib.load_all(ADDRLIB_DIR, ae_version=ae_ver)
     print(f'AE address library: {len(addr_lib.ae_db):,} entries')
 
     # --- Relocation scan ---

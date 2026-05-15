@@ -26,19 +26,75 @@ exes/f4/ae/Fallout4.exe          Fallout 4  (1.11.191)
 python run.py
 ```
 
-That's it. Everything else is handled automatically:
+This opens an interactive menu:
 
-- **Git submodules** updated to the latest upstream commits
-- **Python packages** (`pdbparse`, `pyghidra`) installed if missing
-- **LLVM/Clang** downloaded locally if not already on your system
-- **Ghidra** downloaded and extracted if not already present
-- **Steam DRM** detected and stripped via [Steamless](https://github.com/atom0s/Steamless) (downloaded automatically on Windows)
-- **Import scripts** generated from CommonLib headers via clang
-- **Headless Ghidra import** with full type/symbol application and verification
+```
+============================================================
+  Bethesda Ghidra Scripts
+============================================================
+
+  Tools:
+    Ghidra      : 12.0.4
+    Clang       : clang version 22.1.4
+    Steamless   : OK
+    Python pkgs : OK
+
+  Executables:
+    f4/ae: Fallout4.exe
+    skyrim/ae: SkyrimSE.exe
+    skyrim/se: SkyrimSE.exe
+
+  Output:
+    Import scripts : OK
+    Ghidra project : OK
+
+----------------------------------------
+  1) Install prerequisites
+  2) Update CommonLib submodules to latest
+  3) Generate import scripts
+  4) Run headless Ghidra import
+  5) Open Ghidra
+  6) Full rebuild (generate + import)
+  7) Clean Ghidra project (start fresh)
+  q) Quit
+----------------------------------------
+```
+
+The status panel at the top shows what's installed and detected. Menu options:
+
+| Option | What it does |
+|--------|-------------|
+| **1** | Installs Python packages (`pdbparse`, `pyghidra`), downloads Ghidra, LLVM/Clang, and Steamless if missing. Safe to run multiple times -- skips anything already installed. |
+| **2** | Runs `git submodule update --init --recursive --remote` to pull the latest CommonLib and AddressLibraryDatabase commits. Run this when upstream CommonLib has new types or fixes. |
+| **3** | Parses CommonLib headers with clang and generates the Ghidra import scripts under `ghidrascripts/`. Requires clang (option 1 installs it). The executable version is auto-detected to select the correct address library. |
+| **4** | Runs the generated import scripts against your executables in headless Ghidra. Creates or updates the Ghidra project with all types, symbols, and signatures. Steam DRM is stripped automatically via Steamless. |
+| **5** | Opens Ghidra with the project loaded. |
+| **6** | Runs options 3 + 4 back-to-back. Use this after updating submodules or replacing an executable. |
+| **7** | Deletes the Ghidra project and state file so the next import starts from scratch. |
+
+**First-time setup:** run **1**, then **2**, then **6** (or just **6** if you
+already have clang installed). After that, **5** opens Ghidra with everything
+imported.
+
+### Non-interactive mode
+
+For CI or scripting, pass a subcommand instead of using the menu:
+
+```bash
+python run.py setup   # option 1 + 2: install tools and update submodules
+python run.py build   # option 6: generate scripts + headless import
+python run.py all     # setup + build + open Ghidra
+```
+
+### How it works
 
 All binaries end up in a single Ghidra project at
 `ghidraprojects/BethesdaGhidraScripts/`, organized into `/<game>/<version>/`
 folders.
+
+The address library for each executable is selected automatically based on
+the detected PE version. For Skyrim AE, all versions from 1.6.317 to 1.6.1179
+are supported via the AddressLibraryDatabase.
 
 ### Requirements
 
@@ -55,7 +111,7 @@ first run.
 | Game         | Folder           | Address library  | CommonLib                 |
 |--------------|------------------|------------------|---------------------------|
 | Skyrim SE    | `exes/skyrim/se` | `1-5-97-0`       | `powerof3/CommonLibSSE`   |
-| Skyrim AE    | `exes/skyrim/ae` | `1-6-1170-0`     | `powerof3/CommonLibSSE`   |
+| Skyrim AE    | `exes/skyrim/ae` | auto-detected     | `powerof3/CommonLibSSE`   |
 | Fallout 4 AE | `exes/f4/ae`    | `1-11-191-0`     | `libxse/commonlibf4`      |
 
 You don't need all three. The script detects which executables are present and
@@ -93,16 +149,17 @@ rather than guessed. In practice ~99.75% of struct fields are fully typed.
 
 ## Advanced usage
 
-### Running individual steps
+### Running pipeline scripts directly
 
-The `run.py` script runs the full pipeline. If you only need part of it:
+The `run.py` menu is the recommended interface. If you need to run individual
+pipeline steps (e.g. regenerating only one game, or importing a single target):
 
 ```bash
 # Generate import scripts only (requires clang)
 python scripts/commonlibsse/parse_commonlib_types.py   # Skyrim SE + AE
 python scripts/commonlibf4/parse_commonlib_types.py    # Fallout 4 AE
 
-# Run headless Ghidra import only (requires generated scripts + Ghidra)
+# Run headless Ghidra import (requires generated scripts + Ghidra)
 python scripts/run_headless.py                # all targets
 python scripts/run_headless.py skyrim         # all skyrim versions
 python scripts/run_headless.py skyrim ae      # specific target
@@ -125,7 +182,7 @@ Symbols are applied in priority order. Higher-priority sources take precedence:
 
 ```
 .
-├── run.py                           One-click setup and run
+├── run.py                           Interactive launcher / menu
 ├── extern/                          CommonLib submodules (auto-updated)
 ├── addresslibrary/                  Address library .bin files
 ├── extras/                          Fallback symbol sources (PDB, IDA)

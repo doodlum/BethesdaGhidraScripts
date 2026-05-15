@@ -22,7 +22,7 @@ import re
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'core'))
 
-from address_library import AddressLibrary
+from address_library import AddressLibrary, get_pe_version
 from pdb_symbols import load_pdb_names as load_se_pdb_names
 from ghidra_import_gen import (
     build_vtable_structs as _build_vtable_structs,
@@ -186,12 +186,42 @@ def run_version(version, symbols_json, fallback_symbols_json='[]'):
     print('Output: {} ({} enums, {} structs)'.format(output_path, n_enums, n_structs))
 
 
+def _detect_exe_versions():
+    """Detect SE and AE exe versions from the exes directory."""
+    exes_root = os.path.join(PROJECT_DIR, 'exes', 'skyrim')
+    se_ver = ae_ver = None
+
+    for ver_name, attr in [('se', 'se_ver'), ('ae', 'ae_ver')]:
+        ver_dir = os.path.join(exes_root, ver_name)
+        if not os.path.isdir(ver_dir):
+            continue
+        for fname in os.listdir(ver_dir):
+            if fname.lower().endswith('.exe') and 'unpacked' not in fname.lower():
+                exe_path = os.path.join(ver_dir, fname)
+                v = get_pe_version(exe_path)
+                if v:
+                    print('  Detected {} exe version: {}'.format(
+                        ver_name.upper(), '.'.join(str(x) for x in v)))
+                    if attr == 'se_ver':
+                        se_ver = v
+                    else:
+                        ae_ver = v
+                    break
+
+    return se_ver, ae_ver
+
+
 def main():
     import json as _json
 
-    # Load address databases (binary data, not source scanning)
+    # Detect exe versions for address library selection
+    print('=== Detecting exe versions ===')
+    se_ver, ae_ver = _detect_exe_versions()
+
+    # Load address databases using detected versions
     addr_lib = AddressLibrary()
-    addr_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'))
+    addr_lib.load_all(os.path.join(PROJECT_DIR, 'addresslibrary'),
+                      se_version=se_ver, ae_version=ae_ver)
     print('SE entries: {}, AE entries: {}'.format(len(addr_lib.se_db), len(addr_lib.ae_db)))
 
     print('\n=== Collecting symbols via regex relocation parser ===')

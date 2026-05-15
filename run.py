@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-One-click setup and run.
+Interactive launcher for Bethesda Ghidra Scripts.
 
-Drop game executables under exes/<game>/<version>/ and run this script:
+Presents a menu of actions: update submodules, rebuild import scripts,
+run the headless Ghidra import, open Ghidra, etc.
 
-  exes/skyrim/se/SkyrimSE.exe
-  exes/skyrim/ae/SkyrimSE.exe
-  exes/f4/ae/Fallout4.exe
-
-Everything else is handled automatically. On subsequent runs, expensive steps
-(script generation, headless import) are skipped unless something has actually
-changed (submodule update, new/replaced exe, missing project).
+Usage:
+  python run.py            Interactive menu
+  python run.py setup      Install prerequisites + tools (non-interactive)
+  python run.py build      Generate scripts + headless import (non-interactive)
+  python run.py all        Full pipeline: setup + build + open Ghidra
 """
 import json
 import os
@@ -49,6 +48,10 @@ API_HEADERS = {
 }
 
 
+# =====================================================================
+#  Helpers
+# =====================================================================
+
 def _header(msg):
     print(f"\n{'=' * 60}\n  {msg}\n{'=' * 60}")
 
@@ -67,7 +70,77 @@ def _download(url, dest, label="Downloading"):
             print()
 
 
-# -- State tracking ----------------------------------------------------
+def _can_import(name):
+    try:
+        __import__(name)
+        return True
+    except ImportError:
+        return False
+
+
+# =====================================================================
+#  Status detection
+# =====================================================================
+
+def _ghidra_version(path):
+    props = path / "Ghidra" / "application.properties"
+    if props.is_file():
+        for line in props.read_text().splitlines():
+            if line.startswith("application.version="):
+                return line.split("=", 1)[1]
+    return None
+
+
+def _clang_version():
+    clang_name = "clang.exe" if sys.platform == "win32" else "clang"
+    local_clang = LLVM_DIR / "bin" / clang_name
+    if local_clang.is_file():
+        os.environ["PATH"] = str(LLVM_DIR / "bin") + os.pathsep + os.environ.get("PATH", "")
+    try:
+        r = subprocess.run(
+            ["clang", "--version"], capture_output=True, text=True, check=True)
+        return r.stdout.strip().splitlines()[0]
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+
+def _discover_exes():
+    """Return list of (game, version, exe_path) tuples."""
+    found = []
+    if not EXES_ROOT.is_dir():
+        return found
+    for game_dir in sorted(EXES_ROOT.iterdir()):
+        if not game_dir.is_dir():
+            continue
+        for ver_dir in sorted(game_dir.iterdir()):
+            if not ver_dir.is_dir():
+                continue
+            exes = [f for f in sorted(ver_dir.glob("*.exe"))
+                    if "unpacked" not in f.name.lower()]
+            if exes:
+                found.append((game_dir.name, ver_dir.name, exes[0]))
+    return found
+
+
+def _discover_games():
+    return {g for g, _, _ in _discover_exes()}
+
+
+def _project_exists():
+    gpr = PROJECTS_DIR / GHIDRA_PROJECT_NAME / f"{GHIDRA_PROJECT_NAME}.gpr"
+    return gpr.is_file()
+
+
+def _scripts_exist(games):
+    if "skyrim" in games:
+        for name in ("CommonLibImport_SE.py", "CommonLibImport_AE.py"):
+            if not (GHIDRA_SCRIPTS_DIR / name).is_file():
+                return False
+    if "f4" in games:
+        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_F4_AE.py").is_file():
+            return False
+    return True
+
 
 def _get_submodule_hashes():
     r = subprocess.run(
@@ -107,27 +180,12 @@ def _save_state(submodules, exes):
         {"submodules": submodules, "exes": exes}, indent=2))
 
 
-def _project_exists():
-    gpr = PROJECTS_DIR / GHIDRA_PROJECT_NAME / f"{GHIDRA_PROJECT_NAME}.gpr"
-    return gpr.is_file()
-
-
-def _scripts_exist(games):
-    if "skyrim" in games:
-        for name in ("CommonLibImport_SE.py", "CommonLibImport_AE.py"):
-            if not (GHIDRA_SCRIPTS_DIR / name).is_file():
-                return False
-    if "f4" in games:
-        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_F4_AE.py").is_file():
-            return False
-    return True
-
-
-# -- Prerequisites -----------------------------------------------------
+# =====================================================================
+#  Actions
+# =====================================================================
 
 def check_prerequisites():
     _header("Prerequisites")
-
     if sys.version_info < (3, 10):
         print(f"  ERROR: Python 3.10+ required (found {sys.version})")
         sys.exit(1)
@@ -142,27 +200,113 @@ def check_prerequisites():
     print("  Python packages: OK")
 
 
-def _can_import(name):
+def update_submodules():
+    _header("Update Submodules")
+    subprocess.run(
+        ["git", "submodule", "update", "--init", "--recursive", "--remote"],
+        cwd=str(REPO_DIR), check=True)
+    print("  Up to date.")
+
+
+def setup_ghidra():
+    _header("Ghidra")
+
+    old_ghidra = REPO_DIR / "ghidra"
+    if not GHIDRA_DIR.exists() and old_ghidra.exists() and _ghidra_version(old_ghidra):
+        print("  Migrating Ghidra to tools/ ...")
+        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_ghidra), str(GHIDRA_DIR))
+
+    ver = _ghidra_version(GHIDRA_DIR)
+    if ver:
+        print(f"  Ghidra {ver} (installed)")
+        return
+
+    print("  Fetching latest release ...")
+    req = urllib.request.Request(GHIDRA_RELEASES_URL, headers=API_HEADERS)
+    with urllib.request.urlopen(req) as resp:
+        release = json.loads(resp.read())
+
+    asset = next(
+        (a for a in release.get("assets", [])
+         if a["name"].endswith(".zip") and "ghidra" in a["name"].lower()),
+        None)
+    if not asset:
+        print("  ERROR: no Ghidra zip found in latest release")
+        sys.exit(1)
+
+    size_mb = asset.get("size", 0) / 1024 / 1024
+    print(f"  {asset['name']} ({size_mb:.0f} MB)")
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
     try:
-        __import__(name)
-        return True
-    except ImportError:
-        return False
+        _download(asset["browser_download_url"], tmp_path)
+        print("  Extracting ...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(tmp_path) as zf:
+                zf.extractall(tmpdir)
+            roots = [p for p in Path(tmpdir).iterdir() if p.is_dir()]
+            src = roots[0] if len(roots) == 1 else Path(tmpdir)
+            TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+            if GHIDRA_DIR.exists():
+                shutil.rmtree(GHIDRA_DIR)
+            shutil.copytree(str(src), str(GHIDRA_DIR))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    ver = _ghidra_version(GHIDRA_DIR)
+    print(f"  Ghidra {ver or '?'} installed")
 
 
-def _clang_version():
+def setup_steamless():
+    if sys.platform != "win32":
+        return
+
+    _header("Steamless")
+    cli = STEAMLESS_DIR / "Steamless.CLI.exe"
+    if cli.is_file():
+        print("  Steamless CLI: OK")
+        return
+
+    print("  Fetching latest release ...")
+    req = urllib.request.Request(STEAMLESS_RELEASES_URL, headers=API_HEADERS)
     try:
-        r = subprocess.run(
-            ["clang", "--version"], capture_output=True, text=True, check=True)
-        return r.stdout.strip().splitlines()[0]
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
+        with urllib.request.urlopen(req) as resp:
+            release = json.loads(resp.read())
+    except Exception as e:
+        print(f"  WARNING: could not fetch Steamless ({e}); DRM removal skipped")
+        return
 
+    asset = next(
+        (a for a in release.get("assets", []) if a["name"].endswith(".zip")),
+        None)
+    if not asset:
+        print("  WARNING: no zip in latest release; DRM removal skipped")
+        return
 
-# -- LLVM / Clang ------------------------------------------------------
+    print(f"  {asset['name']}")
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        _download(asset["browser_download_url"], tmp_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with zipfile.ZipFile(tmp_path) as zf:
+                zf.extractall(tmpdir)
+            hits = list(Path(tmpdir).rglob("Steamless.CLI.exe"))
+            if not hits:
+                print("  WARNING: Steamless.CLI.exe not found in archive")
+                return
+            src = hits[0].parent
+            STEAMLESS_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(str(src), str(STEAMLESS_DIR), dirs_exist_ok=True)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    print("  Steamless CLI installed")
+
 
 def _ensure_clang():
-    """Make sure clang is available; download LLVM locally if not."""
     clang_name = "clang.exe" if sys.platform == "win32" else "clang"
     local_clang = LLVM_DIR / "bin" / clang_name
 
@@ -248,146 +392,13 @@ def _download_llvm():
     print("  LLVM installed")
 
 
-# -- Submodules --------------------------------------------------------
-
-def update_submodules():
-    _header("Submodules")
-    subprocess.run(
-        ["git", "submodule", "update", "--init", "--recursive", "--remote"],
-        cwd=str(REPO_DIR), check=True)
-    print("  Up to date.")
-
-
-# -- Ghidra -----------------------------------------------------------
-
-def _ghidra_version(path):
-    props = path / "Ghidra" / "application.properties"
-    if props.is_file():
-        for line in props.read_text().splitlines():
-            if line.startswith("application.version="):
-                return line.split("=", 1)[1]
-    return None
-
-
-def setup_ghidra():
-    _header("Ghidra")
-
-    # Migrate from old location (repo root) to tools/
-    old_ghidra = REPO_DIR / "ghidra"
-    if not GHIDRA_DIR.exists() and old_ghidra.exists() and _ghidra_version(old_ghidra):
-        print("  Migrating Ghidra to tools/ ...")
-        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_ghidra), str(GHIDRA_DIR))
-
-    ver = _ghidra_version(GHIDRA_DIR)
-    if ver:
-        print(f"  Ghidra {ver} (installed)")
+def generate_scripts(games=None):
+    if games is None:
+        games = _discover_games()
+    if not games:
+        print("  No executables found -- nothing to generate.")
         return
 
-    print("  Fetching latest release ...")
-    req = urllib.request.Request(GHIDRA_RELEASES_URL, headers=API_HEADERS)
-    with urllib.request.urlopen(req) as resp:
-        release = json.loads(resp.read())
-
-    asset = next(
-        (a for a in release.get("assets", [])
-         if a["name"].endswith(".zip") and "ghidra" in a["name"].lower()),
-        None)
-    if not asset:
-        print("  ERROR: no Ghidra zip found in latest release")
-        sys.exit(1)
-
-    size_mb = asset.get("size", 0) / 1024 / 1024
-    print(f"  {asset['name']} ({size_mb:.0f} MB)")
-
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        _download(asset["browser_download_url"], tmp_path)
-        print("  Extracting ...")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(tmp_path) as zf:
-                zf.extractall(tmpdir)
-            roots = [p for p in Path(tmpdir).iterdir() if p.is_dir()]
-            src = roots[0] if len(roots) == 1 else Path(tmpdir)
-            TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-            if GHIDRA_DIR.exists():
-                shutil.rmtree(GHIDRA_DIR)
-            shutil.copytree(str(src), str(GHIDRA_DIR))
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    ver = _ghidra_version(GHIDRA_DIR)
-    print(f"  Ghidra {ver or '?'} installed")
-
-
-# -- Steamless ---------------------------------------------------------
-
-def setup_steamless():
-    if sys.platform != "win32":
-        return
-
-    _header("Steamless")
-    cli = STEAMLESS_DIR / "Steamless.CLI.exe"
-    if cli.is_file():
-        print("  Steamless CLI: OK")
-        return
-
-    print("  Fetching latest release ...")
-    req = urllib.request.Request(STEAMLESS_RELEASES_URL, headers=API_HEADERS)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            release = json.loads(resp.read())
-    except Exception as e:
-        print(f"  WARNING: could not fetch Steamless ({e}); DRM removal skipped")
-        return
-
-    asset = next(
-        (a for a in release.get("assets", []) if a["name"].endswith(".zip")),
-        None)
-    if not asset:
-        print("  WARNING: no zip in latest release; DRM removal skipped")
-        return
-
-    print(f"  {asset['name']}")
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        _download(asset["browser_download_url"], tmp_path)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(tmp_path) as zf:
-                zf.extractall(tmpdir)
-            hits = list(Path(tmpdir).rglob("Steamless.CLI.exe"))
-            if not hits:
-                print("  WARNING: Steamless.CLI.exe not found in archive")
-                return
-            src = hits[0].parent
-            STEAMLESS_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(str(src), str(STEAMLESS_DIR), dirs_exist_ok=True)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    print("  Steamless CLI installed")
-
-
-# -- Discovery ---------------------------------------------------------
-
-def discover_games():
-    games = set()
-    if not EXES_ROOT.is_dir():
-        return games
-    for game_dir in EXES_ROOT.iterdir():
-        if not game_dir.is_dir():
-            continue
-        for ver_dir in game_dir.iterdir():
-            if ver_dir.is_dir() and any(ver_dir.glob("*.exe")):
-                games.add(game_dir.name)
-    return games
-
-
-# -- Generation --------------------------------------------------------
-
-def generate_scripts(games):
     _header("Generating Import Scripts")
     _ensure_clang()
 
@@ -405,16 +416,12 @@ def generate_scripts(games):
             cwd=str(REPO_DIR), check=True)
 
 
-# -- Headless ----------------------------------------------------------
-
 def run_headless():
     _header("Headless Ghidra Import")
     return subprocess.run(
         [sys.executable, str(SCRIPTS_DIR / "run_headless.py")],
         cwd=str(REPO_DIR)).returncode
 
-
-# -- Launch Ghidra -----------------------------------------------------
 
 def launch_ghidra():
     _header("Launching Ghidra")
@@ -429,7 +436,6 @@ def launch_ghidra():
     project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
     gpr = project_dir / f"{GHIDRA_PROJECT_NAME}.gpr"
 
-    # Remove stale lock left by headless run (JPype/JVM may not release instantly)
     lock = project_dir / f"{GHIDRA_PROJECT_NAME}.lock"
     if lock.exists():
         try:
@@ -442,7 +448,7 @@ def launch_ghidra():
         subprocess.Popen(
             [str(launcher), str(gpr)],
             cwd=str(GHIDRA_DIR),
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=subprocess.CREATE_NO_WINDOW,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
     else:
@@ -454,66 +460,186 @@ def launch_ghidra():
             stderr=subprocess.DEVNULL)
 
 
-# -- Main --------------------------------------------------------------
+def clean_project():
+    _header("Clean Ghidra Project")
+    project_dir = PROJECTS_DIR / GHIDRA_PROJECT_NAME
+    if project_dir.exists():
+        shutil.rmtree(project_dir)
+        print("  Removed project directory.")
+    if STATE_FILE.is_file():
+        STATE_FILE.unlink()
+        print("  Removed state file.")
+    print("  Done. Next import will start fresh.")
 
-def main():
+
+# =====================================================================
+#  Status display
+# =====================================================================
+
+def _print_status():
+    """Print current environment status and return (games, status_lines)."""
+    print()
     print("=" * 60)
     print("  Bethesda Ghidra Scripts")
     print("=" * 60)
 
+    # Tools
+    ghidra_ver = _ghidra_version(GHIDRA_DIR)
+    clang_ver = _clang_version()
+    steamless_ok = (STEAMLESS_DIR / "Steamless.CLI.exe").is_file()
+    pkgs_ok = all(_can_import(imp) for imp in REQUIRED_PACKAGES)
+
+    print()
+    print("  Tools:")
+    print(f"    Ghidra      : {ghidra_ver or 'not installed'}")
+    print(f"    Clang       : {clang_ver or 'not installed'}")
+    if sys.platform == "win32":
+        print(f"    Steamless   : {'OK' if steamless_ok else 'not installed'}")
+    print(f"    Python pkgs : {'OK' if pkgs_ok else 'missing'}")
+
+    # Executables
+    exes = _discover_exes()
+    games = {g for g, _, _ in exes}
+    print()
+    print("  Executables:")
+    if exes:
+        for game, ver, exe in exes:
+            print(f"    {game}/{ver}: {exe.name}")
+    else:
+        print("    (none found)")
+
+    # Generated scripts
+    has_scripts = _scripts_exist(games) if games else False
+    has_project = _project_exists()
+    print()
+    print("  Output:")
+    print(f"    Import scripts : {'OK' if has_scripts else 'not generated'}")
+    print(f"    Ghidra project : {'OK' if has_project else 'not created'}")
+
+    return games
+
+
+# =====================================================================
+#  Menu
+# =====================================================================
+
+MENU_ITEMS = [
+    ("1", "Install prerequisites (Python packages, Ghidra, Clang, Steamless)"),
+    ("2", "Update CommonLib submodules to latest"),
+    ("3", "Generate import scripts"),
+    ("4", "Run headless Ghidra import"),
+    ("5", "Open Ghidra"),
+    ("6", "Full rebuild (generate + import)"),
+    ("7", "Clean Ghidra project (start fresh)"),
+    ("q", "Quit"),
+]
+
+
+def _show_menu():
+    print()
+    print("-" * 40)
+    for key, label in MENU_ITEMS:
+        print(f"  {key}) {label}")
+    print("-" * 40)
+
+
+def _run_menu():
+    games = _print_status()
+    _show_menu()
+
+    while True:
+        try:
+            choice = input("\n  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if choice == "q":
+            break
+        elif choice == "1":
+            check_prerequisites()
+            setup_ghidra()
+            setup_steamless()
+            _ensure_clang()
+        elif choice == "2":
+            update_submodules()
+        elif choice == "3":
+            games = _discover_games()
+            generate_scripts(games)
+        elif choice == "4":
+            rc = run_headless()
+            if rc == 0:
+                _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+        elif choice == "5":
+            launch_ghidra()
+            break
+        elif choice == "6":
+            games = _discover_games()
+            generate_scripts(games)
+            rc = run_headless()
+            if rc == 0:
+                _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+        elif choice == "7":
+            clean_project()
+        else:
+            print("  Invalid choice.")
+            continue
+
+        games = _print_status()
+        _show_menu()
+
+
+# =====================================================================
+#  CLI subcommands for non-interactive use
+# =====================================================================
+
+def _cmd_setup():
     check_prerequisites()
     update_submodules()
     setup_ghidra()
     setup_steamless()
 
-    games = discover_games()
+
+def _cmd_build():
+    games = _discover_games()
     if not games:
-        _header("No Executables Found")
-        print("  Place game .exe files under exes/<game>/<version>/:")
-        print()
-        print("    exes/skyrim/se/SkyrimSE.exe")
-        print("    exes/skyrim/ae/SkyrimSE.exe")
-        print("    exes/f4/ae/Fallout4.exe")
+        print("No executables found.")
         sys.exit(1)
-
-    print(f"\n  Detected: {', '.join(sorted(games))}")
-
-    prev = _load_state()
-    cur_subs = _get_submodule_hashes()
-    cur_exes = _get_exe_fingerprints()
-
-    subs_changed    = cur_subs != prev.get("submodules")
-    exes_changed    = cur_exes != prev.get("exes")
-    project_missing = not _project_exists()
-    scripts_missing = not _scripts_exist(games)
-
-    need_generate = subs_changed or scripts_missing
-    need_import   = need_generate or exes_changed or project_missing
-
-    rc = 0
-
-    if need_generate:
-        generate_scripts(games)
-    else:
-        print("\n  Import scripts up to date, skipping generation.")
-
-    if need_import:
-        rc = run_headless()
-    else:
-        print("  Ghidra project up to date, skipping import.")
-
+    generate_scripts(games)
+    rc = run_headless()
     if rc == 0:
-        _save_state(cur_subs, cur_exes)
-
-    launch_ghidra()
-
-    print("\n" + "=" * 60)
-    if rc == 0:
-        print("  Done!")
-    else:
-        print("  Finished with errors (see above)")
-    print("=" * 60)
+        _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
     sys.exit(rc)
+
+
+def _cmd_all():
+    _cmd_setup()
+    games = _discover_games()
+    if not games:
+        print("No executables found.")
+        sys.exit(1)
+    generate_scripts(games)
+    rc = run_headless()
+    if rc == 0:
+        _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+    launch_ghidra()
+    sys.exit(rc)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        _run_menu()
+    elif args[0] == "setup":
+        _cmd_setup()
+    elif args[0] == "build":
+        _cmd_build()
+    elif args[0] == "all":
+        _cmd_all()
+    else:
+        print(f"Unknown command: {args[0]}")
+        print("Usage: python run.py [setup|build|all]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
