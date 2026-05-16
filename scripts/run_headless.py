@@ -14,7 +14,10 @@ Layout:
   exes/skyrim/se/SkyrimSE.exe              -> CommonLibImport_SE.py
   exes/skyrim/ae/SkyrimSE.exe              -> CommonLibImport_AE.py
   exes/skyrim/vr/SkyrimVR.exe              -> CommonLibImport_VR.py
+  exes/f4/og/Fallout4.exe                  -> CommonLibImport_F4_OG.py
+  exes/f4/ng/Fallout4.exe                  -> CommonLibImport_F4_NG.py
   exes/f4/ae/Fallout4.exe                  -> CommonLibImport_F4_AE.py
+  exes/f4/vr/Fallout4VR.exe                -> CommonLibImport_F4_VR.py
 
 All binaries are stored in one Ghidra project under /<game>/<version>/ folders.
 """
@@ -56,6 +59,10 @@ SPOT_CHECKS = {
             ("BGSEquipType",      "/CommonLibF4/RE", 10,  1),
             ("Actor_vtbl",        "/CommonLibF4/RE", 800, 100),
         ],
+        # VTABLE_* labels live in the low/mid ID range and resolve in every
+        # F4 address-library DB; RTTI_* labels use IDs >= 4M which only
+        # exist in meh321's AE generation (and largely in NG).  Per-version
+        # overrides below drop RTTI_* from the OG / VR / NG expectation.
         'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect", "RTTI_Actor"],
         'functions': [],
         'min_named': 200, 'min_enums': 100, 'min_structs': 500, 'min_syms': 0,
@@ -63,52 +70,33 @@ SPOT_CHECKS = {
 }
 
 
+# Per-version overlays applied on top of the per-game baseline.  RTTI_* IDs
+# (>= 4M) only exist in meh321's AE address library generation, so the
+# other F4 patches drop that label expectation.  OG / VR also have weaker
+# function-name coverage than AE/NG (some names come from cross-version
+# byte-sig porting), so the min_named floor is lowered to a value attainable
+# with the byte-sig pass alone.
+SPOT_CHECKS_OVERRIDES = {
+    ('f4', 'og'): {
+        'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect"],
+        'min_named': 100,
+    },
+    ('f4', 'ng'): {
+        'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect"],
+    },
+    ('f4', 'vr'): {
+        'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect"],
+        'min_named': 100,
+    },
+}
+
+
+sys.path.insert(0, str(REPO_DIR / "scripts" / "core"))
+from steamless import ensure_unpacked as _ensure_unpacked_impl  # noqa: E402
+
+
 def _ensure_unpacked(binary: Path) -> Path:
-    """Detect and strip SteamStub DRM via Steamless CLI.
-
-    Returns an unpacked copy if DRM was present, otherwise the original. A
-    previously unpacked file newer than the source is reused without re-running
-    Steamless. Missing CLI / non-Windows hosts are a transparent no-op.
-    """
-    if not STEAMLESS_CLI.is_file() or sys.platform != "win32":
-        return binary
-
-    src_mtime = binary.stat().st_mtime
-
-    def find_unpacked():
-        # Steamless versions vary: <stem>.unpacked.exe or <name>.unpacked[.exe]
-        for c in binary.parent.glob(f"{binary.stem}*unpacked*"):
-            if c == binary or not c.is_file():
-                continue
-            cstat = c.stat()
-            if cstat.st_mtime >= src_mtime and cstat.st_size >= binary.stat().st_size // 2:
-                return c
-        return None
-
-    cached = find_unpacked()
-    if cached is not None:
-        print(f"Using cached Steamless output: {cached.name}")
-        return cached
-
-    print(f"Running Steamless on {binary.name} ...")
-    try:
-        result = subprocess.run(
-            [str(STEAMLESS_CLI), "--quiet", "--keepbind", str(binary)],
-            capture_output=True, text=True, check=False,
-            cwd=str(STEAMLESS_CLI.parent),
-        )
-        if result.stdout.strip(): print(result.stdout.rstrip())
-        if result.stderr.strip(): print(result.stderr.rstrip(), file=sys.stderr)
-    except Exception as e:
-        print(f"  Steamless failed to run: {e} -- using original binary.")
-        return binary
-
-    out = find_unpacked()
-    if out is not None:
-        print(f"  SteamStub DRM removed -> {out.name}")
-        return out
-    print("  No SteamStub DRM detected; using original binary.")
-    return binary
+    return _ensure_unpacked_impl(binary, STEAMLESS_CLI)
 
 
 def script_for(game: str, version: str) -> Path:
@@ -144,7 +132,10 @@ def _verify(program, game, version):
     fm        = program.getFunctionManager()
     dtm       = program.getDataTypeManager()
     sym_table = program.getSymbolTable()
-    spec = SPOT_CHECKS[game]
+    spec = dict(SPOT_CHECKS[game])
+    override = SPOT_CHECKS_OVERRIDES.get((game, version))
+    if override:
+        spec.update(override)
 
     total_funcs  = fm.getFunctionCount()
     named_funcs  = sum(1 for f in fm.getFunctions(True)
