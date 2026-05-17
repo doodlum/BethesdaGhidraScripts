@@ -108,10 +108,10 @@ def _try_clang_types(verbose=True):
 
         if verbose:
             print('Building vtable structs...')
-        vtable_structs = build_vtable_structs(structs, category_prefix='/CommonLibSF')
+        vtable_structs = build_vtable_structs(structs)
         inject_vtable_fields(structs, vtable_structs)
         flatten_structs(structs)
-        apply_secondary_vtable_typing(structs, vtable_structs)
+        apply_secondary_vtable_typing(structs)
 
         if verbose:
             print('  enums:    {}'.format(len(enums)))
@@ -172,6 +172,19 @@ def main():
     # vtables were inferred in the first place.
     if vtable_structs:
         from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
+        from vtable_matcher import load_json as _load_shift_map_json
+        from vtable_patcher import patch_vtable_structs as _patch_vtable_structs
+
+        # Apply per-version shift map (if one exists) to remap onto the
+        # actual binary layout.  Single-version pipeline today but symmetric
+        # with the SSE/F4 builds; future SF patches can drop in a shift map
+        # without touching this code.
+        shift_map_path = os.path.join(SCRIPT_DIR, 'refs', 'shift_sf.json')
+        shift_map = _load_shift_map_json(shift_map_path)
+        if shift_map:
+            print('Applying SF vtable shift map: {}'.format(shift_map_path))
+            _patch_vtable_structs(vtable_structs, shift_map, 'sf')
+
         _verify_anchors_or_exit('sf', vtable_structs,
                                 os.path.join(SCRIPT_DIR, 'anchors', 'sf.csv'))
     else:
