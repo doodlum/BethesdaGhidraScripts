@@ -1,0 +1,11 @@
+class,method,slot,note
+Actor,KillDying,0xAA,Skyrim AE 1.6.1170 shares SE vtable layout (verified Ghidra both PlayerCharacter vtables = vtable[173]=Update)
+Actor,Resurrect,0xAB,
+Actor,PutActorOnMountQuick,0xAC,
+Actor,Update,0xAD,
+Actor,UpdateNoAI,0xAE,
+Actor,UpdateCharacterControllerSimulationSettings,0xAF,
+Actor,PotentiallyFixRagdollState,0xB0,
+Actor,UpdateNonRenderSafe,0xB1,
+PlayerCharacter,Update,0xAD,
+PlayerCharacter,Resurrect,0xAB,

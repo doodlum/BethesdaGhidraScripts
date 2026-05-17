@@ -1,0 +1,12 @@
+class,method,slot,note
+Actor,KillDying,0xCB,F4VR 1.2.72; no shift before UpdateNoAI
+Actor,Resurrect,0xCC,no shift
+Actor,PutActorInChairBedQuick,0xCD,no shift; PDB-confirmed Actor::PutActorInChairBedQuick at 0x140DC9C40 = F4VR Actor vtable vf205
+Actor,PutActorOnMountQuick,0xCE,no shift
+Actor,Update,0xCF,no shift; Update sits before the F4VR insertion point
+Actor,UpdateNoAI,0xD0,no shift; last slot before insertion
+Actor,UpdateMotionDrivenState,0xD2,+1; F4VR PDB-named PlayerCharacter::UpdateMotionDrivenState at 0x140F2A110 = PlayerCharacter vf210 (0xD2 vs flat 0xD1)
+Actor,UpdateCharacterControllerSimulationSettings,0xD3,+1
+Actor,PotentiallyFixRagdollState,0xD4,+1
+Actor,UpdateNonRenderSafe,0xD5,+1; PDB-named Actor::UpdateNonRenderSafe at 0x140DCE580 = Actor vf213 (0xD5 vs flat 0xD4)
+PlayerCharacter,Update,0xCF,inherited slot; unchanged in F4VR

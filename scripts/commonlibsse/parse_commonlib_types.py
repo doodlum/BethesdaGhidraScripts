@@ -31,6 +31,7 @@ from ghidra_import_gen import (
     apply_secondary_vtable_typing as _apply_secondary_vtable_typing,
     generate_script,
 )
+from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -189,6 +190,12 @@ def run_version(version, symbols_json, fallback_symbols_json='[]'):
     _inject_vtable_fields(structs, vtable_structs)
     _flatten_structs(structs)
     _apply_secondary_vtable_typing(structs)
+
+    # Verify hand-checked vtable slot anchors for this runtime before emitting
+    # the script.  Catches silent layout drift (e.g. VR insertion points) that
+    # the shared-header AST parse cannot otherwise see.  Fatal on mismatch.
+    anchors_csv = os.path.join(SCRIPT_DIR, 'anchors', '{}.csv'.format(version))
+    _verify_anchors_or_exit(version, vtable_structs, anchors_csv)
 
     print('Generating Ghidra script...')
     n_enums, n_structs = generate_script(enums, structs, vtable_structs, output_path, version, symbols_json, fallback_symbols_json, template_source)

@@ -1,0 +1,12 @@
+class,method,slot,note
+Actor,KillDying,0xCB,CommonLibF4 Actor.h // 0CB; F4 flat layout shared OG/NG/AE
+Actor,Resurrect,0xCC,// 0CC
+Actor,PutActorInChairBedQuick,0xCD,// 0CD
+Actor,PutActorOnMountQuick,0xCE,// 0CE
+Actor,Update,0xCF,// 0CF
+Actor,UpdateNoAI,0xD0,// 0D0
+Actor,UpdateMotionDrivenState,0xD1,// 0D1
+Actor,UpdateCharacterControllerSimulationSettings,0xD2,// 0D2
+Actor,PotentiallyFixRagdollState,0xD3,// 0D3
+Actor,UpdateNonRenderSafe,0xD4,// 0D4
+PlayerCharacter,Update,0xCF,inherited slot

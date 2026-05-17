@@ -1,0 +1,11 @@
+class,method,slot,note
+Actor,KillDying,0xAA,CommonLibSSE Actor.h // 0AA; Ghidra SE PlayerCharacter vtable[170]
+Actor,Resurrect,0xAB,// 0AB
+Actor,PutActorOnMountQuick,0xAC,// 0AC
+Actor,Update,0xAD,// 0AD; Ghidra SE PlayerCharacter vtable[173] = PlayerCharacter::Update (override)
+Actor,UpdateNoAI,0xAE,// 0AE
+Actor,UpdateCharacterControllerSimulationSettings,0xAF,// 0AF
+Actor,PotentiallyFixRagdollState,0xB0,// 0B0
+Actor,UpdateNonRenderSafe,0xB1,// 0B1
+PlayerCharacter,Update,0xAD,inherited slot; PC overrides Actor::Update at same index
+PlayerCharacter,Resurrect,0xAB,inherited slot

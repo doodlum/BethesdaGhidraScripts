@@ -1,0 +1,6 @@
+class,method,slot,note
+Actor,PlayPickUpSound,0x130,CommonLibSF Actor.h // 130
+Actor,DrawWeaponMagicHands,0x136,// 136
+Actor,SetPosition,0x137,// 137
+Actor,Resurrect,0x139,// 139
+Actor,Update,0x13F,// 13F

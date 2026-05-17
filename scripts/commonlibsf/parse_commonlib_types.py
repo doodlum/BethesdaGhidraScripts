@@ -163,7 +163,23 @@ def main():
     print('\nSymbols: {} total ({} funcs, {} labels)'.format(
         len(symbols), n_func, n_label))
 
-    # 5. Generate the Ghidra Jython import script
+    # 5. Verify hand-checked vtable slot anchors before emitting.
+    # Single-version pipeline today, but the seam exists so future SF
+    # patch revisions can ship anchor CSVs that catch silent drift.
+    # Skip when vtable_structs is empty (labels-only run without clang):
+    # the verifier expects parsed vtables and would fail with "class not
+    # found" on every anchor row.  Anchor drift is meaningless when no
+    # vtables were inferred in the first place.
+    if vtable_structs:
+        from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
+        _verify_anchors_or_exit('sf', vtable_structs,
+                                os.path.join(SCRIPT_DIR, 'anchors', 'sf.csv'))
+    else:
+        print('Skipping vtable anchor verification: no vtable_structs '
+              '(labels-only run -- needs clang.exe for AST-based vtable '
+              'inference to produce anchorable structs).')
+
+    # 6. Generate the Ghidra Jython import script
     from ghidra_import_gen import generate_script
     output_path = os.path.join(OUTPUT_DIR, 'CommonLibImport_SF.py')
     n_enums, n_structs = generate_script(

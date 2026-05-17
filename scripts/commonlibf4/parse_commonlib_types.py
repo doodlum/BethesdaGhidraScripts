@@ -106,11 +106,20 @@ def _enrich_symbols(symbols_list, structs):
 # Per-version output config.  OG/VR have no fallback symbol pool — their
 # IDs are in disjoint namespaces, so an AE-namespace fallback would
 # poison the import with mislabeled functions.
+#
+# Each entry is (version_key, output_filename, fallback_symbols_json_or_None,
+# anchors_basename, parse_defines).
+#
+# `parse_defines` lets each runtime parse the CommonLib headers with its own
+# preprocessor flags.  All four are currently empty because the powerof3
+# CommonLibF4 fork has no per-version vfunc-insertion #ifdefs — but the seam
+# exists so a VR-aware overlay can add (e.g.) `-DBGS_FALLOUT4_VR=1` and emit
+# a correctly-shifted vtable layout for F4VR without affecting OG/NG/AE.
 F4_TARGETS = (
-    ('f4_og', 'CommonLibImport_F4_OG.py', '[]'),
-    ('f4_ng', 'CommonLibImport_F4_NG.py', '[]'),
-    ('f4_ae', 'CommonLibImport_F4_AE.py', None),   # filled in with IDA fallback
-    ('f4_vr', 'CommonLibImport_F4_VR.py', '[]'),
+    ('f4_og', 'CommonLibImport_F4_OG.py', '[]',  'og.csv', []),
+    ('f4_ng', 'CommonLibImport_F4_NG.py', '[]',  'ng.csv', []),
+    ('f4_ae', 'CommonLibImport_F4_AE.py', None,  'ae.csv', []),
+    ('f4_vr', 'CommonLibImport_F4_VR.py', '[]',  'vr.csv', []),
 )
 
 
@@ -193,20 +202,21 @@ def main():
     print(f'\nTotal symbols: {len(symbols)} '
           f'(OG: {n_og}, NG: {n_ng}, AE: {n_ae}, VR: {n_vr})')
 
-    # --- Type parsing ---
-    print('\n=== Parsing types (clang AST) ===')
+    # --- Type parsing setup (per-version below) ---
+    print('\n=== Parsing types (clang AST) — per version ===')
     from clang_types import collect_types, _setup_include_paths
+    from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
 
     if not os.path.isfile(FALLOUT_H):
         print('ERROR: Could not find Fallout.h at', FALLOUT_H)
         sys.exit(1)
 
-    stub_dir   = os.path.join(os.path.dirname(SCRIPT_DIR), 'core', '_clang_stubs')
-    parse_args = _setup_include_paths(COMMONLIB_INCLUDE, stub_dir)
+    stub_dir = os.path.join(os.path.dirname(SCRIPT_DIR), 'core', '_clang_stubs')
+    base_parse_args = _setup_include_paths(COMMONLIB_INCLUDE, stub_dir)
     # commonlib-shared provides REL/ and REX/ headers
     shared_include = os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4', 'lib', 'commonlib-shared', 'include')
     if os.path.isdir(shared_include):
-        parse_args = ['-I' + shared_include] + parse_args
+        base_parse_args = ['-I' + shared_include] + base_parse_args
 
     # Capture types from REL/, REX/, F4SE/ as well as RE/ — they're sibling
     # namespaces under CommonLibF4 whose AST methods would otherwise be skipped.
@@ -215,18 +225,6 @@ def main():
         os.path.join(PROJECT_DIR, 'extern', 'CommonLibF4',
                      'lib', 'commonlib-shared', 'include'),  # REL/ + REX/
     ]
-    enums, structs, template_source = collect_types(
-        FALLOUT_H, RE_INCLUDE, parse_args,
-        verbose=True, category_prefix='/CommonLibF4',
-        extra_scope_paths=extra_scopes)
-    print(f'Found {len(enums)} enums, {len(structs)} structs/classes')
-
-    _enrich_symbols(symbols, structs)
-
-    vtable_structs = _build_vtable_structs(structs)
-    _inject_vtable_fields(structs, vtable_structs)
-    _flatten_structs(structs)
-    _apply_secondary_vtable_typing(structs)
 
     # --- IDAImportNames_1.11.191.0.py fallback symbols (AE only) ---
     print('\n=== Loading IDAImportNames_1.11.191.0.py fallback symbols ===')
@@ -247,11 +245,36 @@ def main():
     fallback_json_ae = _json.dumps(ida_fallback, separators=(',', ':'))
     symbols_json     = _json.dumps(symbols, separators=(',', ':'))
 
-    # --- Generate per-version scripts ---
+    # --- Per-version: parse → build vtable structs → verify anchors → generate ---
+    # One AST parse per target so a VR-aware overlay can change the layout for
+    # F4VR without affecting OG/NG/AE.  Today all four use empty defines so
+    # the parses produce identical results; the seam is here to make adding
+    # version-specific layout fixes a one-line change in F4_TARGETS.
+    anchors_dir = os.path.join(SCRIPT_DIR, 'anchors')
     print('\nGenerating Ghidra scripts...')
-    for ver, fname, fb_json in F4_TARGETS:
+    for ver, fname, fb_json, anchors_name, parse_defines in F4_TARGETS:
+        print(f'\n--- {ver} ---')
         if fb_json is None:
             fb_json = fallback_json_ae
+        parse_args = list(base_parse_args) + list(parse_defines)
+        enums, structs, template_source = collect_types(
+            FALLOUT_H, RE_INCLUDE, parse_args,
+            verbose=True, category_prefix='/CommonLibF4',
+            extra_scope_paths=extra_scopes)
+        print(f'  found {len(enums)} enums, {len(structs)} structs/classes')
+
+        _enrich_symbols(symbols, structs)
+
+        vtable_structs = _build_vtable_structs(structs)
+        _inject_vtable_fields(structs, vtable_structs)
+        _flatten_structs(structs)
+        _apply_secondary_vtable_typing(structs)
+
+        # Verify hand-checked vtable slot anchors before emitting the script.
+        # Fatal on mismatch — see core/anchor_verifier.py.
+        _verify_anchors_or_exit(ver, vtable_structs,
+                                os.path.join(anchors_dir, anchors_name))
+
         output_path = os.path.join(OUTPUT_DIR, fname)
         n_enums, n_structs = generate_script(
             enums, structs, vtable_structs, output_path,
