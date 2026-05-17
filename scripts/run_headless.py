@@ -37,8 +37,9 @@ STEAMLESS_CLI  = REPO_DIR / "tools" / "Steamless" / "Steamless.CLI.exe"
 GHIDRA_PROJECT_NAME = "BethesdaGhidraScripts"
 
 PROJECT_NAME = {
-    'skyrim': 'SkyrimSE',
-    'f4':     'Fallout4',
+    'skyrim':    'SkyrimSE',
+    'f4':        'Fallout4',
+    'starfield': 'Starfield',
 }
 
 SPOT_CHECKS = {
@@ -66,6 +67,16 @@ SPOT_CHECKS = {
         'labels':    ["VTABLE_Actor", "VTABLE_ActiveEffect", "RTTI_Actor"],
         'functions': [],
         'min_named': 200, 'min_enums': 100, 'min_structs': 500, 'min_syms': 0,
+    },
+    'starfield': {
+        # CommonLibSF uses C++23 features that may defeat the AST parse
+        # on first run; if so the script emits labels-only and these type
+        # spot-checks are skipped (set to [] until the parse is verified).
+        # Once CommonLibSF parses cleanly, restore representative types here.
+        'types':     [],
+        'labels':    ["RTTI_Actor", "VTABLE_Actor"],
+        'functions': [],
+        'min_named': 1000, 'min_enums': 0, 'min_structs': 0, 'min_syms': 0,
     },
 }
 
@@ -102,6 +113,10 @@ def _ensure_unpacked(binary: Path) -> Path:
 def script_for(game: str, version: str) -> Path:
     if game == 'f4':
         return SCRIPTS_DIR / f"CommonLibImport_F4_{version.upper()}.py"
+    if game == 'starfield':
+        # Single-version pipeline; <version> directory name (e.g. "sf" or
+        # "1-16-236-0") is ignored at script-lookup time.
+        return SCRIPTS_DIR / "CommonLibImport_SF.py"
     return SCRIPTS_DIR / f"CommonLibImport_{version.upper()}.py"
 
 

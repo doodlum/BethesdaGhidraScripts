@@ -9,3 +9,6 @@
 	path = extern/CommonLibF4
 	url = https://github.com/libxse/commonlibf4.git
 	branch = main
+[submodule "extern/CommonLibSF"]
+	path = extern/CommonLibSF
+	url = https://github.com/Starfield-Reverse-Engineering/CommonLibSF.git

@@ -156,6 +156,9 @@ def _scripts_exist(games):
                      "CommonLibImport_F4_VR.py"):
             if not (GHIDRA_SCRIPTS_DIR / name).is_file():
                 return False
+    if "starfield" in games:
+        if not (GHIDRA_SCRIPTS_DIR / "CommonLibImport_SF.py").is_file():
+            return False
     return True
 
 
@@ -444,6 +447,12 @@ def generate_scripts(games=None):
             subprocess.run(
                 [sys.executable, str(bytesig_port)],
                 cwd=str(REPO_DIR), check=False)
+    if "starfield" in games:
+        print("  Starfield 1.16.236 ...")
+        subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_DIR / "commonlibsf" / "parse_commonlib_types.py")],
+            cwd=str(REPO_DIR), check=True)
 
 
 def run_headless():

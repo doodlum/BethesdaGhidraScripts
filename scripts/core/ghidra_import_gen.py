@@ -869,6 +869,7 @@ def _import_symbols():
     version_key = {
         'se': 's', 'ae': 'a', 'svr': 'v',
         'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
+        'sf': 'sf',
     }.get(VERSION, 'a')
     symbol_table = currentProgram.getSymbolTable()
     base_addr = currentProgram.getImageBase()
@@ -1152,6 +1153,7 @@ def _import_fallback_symbols():
     version_key = {
         'se': 's', 'ae': 'a', 'svr': 'v',
         'f4_og': 'og', 'f4_ng': 'ng', 'f4_ae': 'a', 'f4_vr': 'v',
+        'sf': 'sf',
     }.get(VERSION, 'a')
     base_addr = currentProgram.getImageBase()
     fm = currentProgram.getFunctionManager()
