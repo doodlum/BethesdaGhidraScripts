@@ -118,9 +118,11 @@ def _try_clang_types(verbose=True):
             print('  structs:  {}'.format(len(structs)))
             print('  vtables:  {}'.format(len(vtable_structs)))
         return enums, structs, vtable_structs, template_source
-    except Exception as e:
+    except (Exception, SystemExit) as e:
+        # clang_types.collect_types() calls sys.exit() when clang.exe isn't
+        # on PATH, so catch SystemExit too.
         print('WARNING: CommonLibSF AST parse failed ({}: {})'.format(type(e).__name__, e))
-        print('         Falling back to labels-only output.')
+        print('         Falling back to labels-only output (no struct/enum types).')
         return {}, {}, {}, ''
 
 
