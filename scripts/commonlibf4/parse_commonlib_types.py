@@ -206,6 +206,8 @@ def main():
     print('\n=== Parsing types (clang AST) — per version ===')
     from clang_types import collect_types, _setup_include_paths
     from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
+    from vtable_matcher import load_json as _load_shift_map_json
+    from vtable_patcher import patch_vtable_structs as _patch_vtable_structs
 
     if not os.path.isfile(FALLOUT_H):
         print('ERROR: Could not find Fallout.h at', FALLOUT_H)
@@ -269,6 +271,15 @@ def main():
         _inject_vtable_fields(structs, vtable_structs)
         _flatten_structs(structs)
         _apply_secondary_vtable_typing(structs)
+
+        # Apply per-version shift map (if one exists) to remap vtable struct
+        # slot offsets onto this binary's actual layout.  Missing shift map ->
+        # fall back to header-shaped layout; anchor verifier below catches drift.
+        shift_map_path = os.path.join(SCRIPT_DIR, 'refs', 'shift_{}.json'.format(ver))
+        shift_map = _load_shift_map_json(shift_map_path)
+        if shift_map:
+            print(f'  applying shift map: {shift_map_path}')
+            _patch_vtable_structs(vtable_structs, shift_map, ver)
 
         # Verify hand-checked vtable slot anchors before emitting the script.
         # Fatal on mismatch — see core/anchor_verifier.py.

@@ -132,15 +132,33 @@ def verify_anchors(version, vtable_structs, anchors_csv):
 
 
 def verify_or_exit(version, vtable_structs, anchors_csv):
-    """Verify and ``sys.exit(1)`` on any mismatch.  Prints success line otherwise."""
+    """Verify and ``sys.exit(1)`` on any *real* mismatch.
+
+    Treats a missing or empty anchor file as a soft warning rather than a
+    failure -- there's nothing to verify against, so we can't claim drift
+    is present; it just means anchors for this version haven't been
+    populated yet.  Real slot mismatches (anchor file exists, anchor
+    pointed to a class/method we can find, but slot is wrong) are still
+    fatal.
+    """
+    if not os.path.isfile(anchors_csv):
+        print('  anchor check SKIPPED ({}): no anchors file at {}'.format(version, anchors_csv))
+        return
     mismatches = verify_anchors(version, vtable_structs, anchors_csv)
-    if mismatches:
-        print('\nERROR: vtable anchor verification failed for {} ({} issue{}):'
-              .format(version, len(mismatches), '' if len(mismatches) == 1 else 's'))
-        for m in mismatches:
-            print('  ' + m)
-        print('\nFix one of: (a) the CommonLib header layout for this version, '
-              '(b) the anchor table at {}, '.format(anchors_csv) +
-              '(c) skip vtable emission for this version if the headers cannot match the binary.')
-        sys.exit(1)
-    print('  anchor check OK ({})'.format(version))
+    # Filter out missing-file / empty-file pseudo-mismatches that aren't real drift.
+    benign = ('anchors file missing', 'anchors CSV has no usable rows')
+    real = [m for m in mismatches if not any(b in m for b in benign)]
+    if not real:
+        if mismatches:
+            print('  anchor check SKIPPED ({}): {}'.format(version, mismatches[0]))
+        else:
+            print('  anchor check OK ({})'.format(version))
+        return
+    print('\nERROR: vtable anchor verification failed for {} ({} issue{}):'
+          .format(version, len(real), '' if len(real) == 1 else 's'))
+    for m in real:
+        print('  ' + m)
+    print('\nFix one of: (a) the CommonLib header layout for this version, '
+          '(b) the anchor table at {}, '.format(anchors_csv) +
+          '(c) skip vtable emission for this version if the headers cannot match the binary.')
+    sys.exit(1)

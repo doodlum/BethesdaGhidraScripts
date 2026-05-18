@@ -1,0 +1,38 @@
+=== Vtable label audit for SF 1.16.236 ===
+
+Total vtables labeled: 22838
+
+--- Check 1: first-slot must be a .text function pointer ---
+  vtables whose slot[0] is outside .text: 0
+  vtables whose slot[0] lands in .text but no function there yet: 0
+
+--- Check 2: vtable-8 should hold RTTI complete-object locator ptr ---
+  vtables with plausible RTTI pre-cell:  22838
+  vtables WITHOUT plausible RTTI pre-cell: 0  (may include multi-inheritance secondary vtables)
+
+--- Check 3: anchors/sf.csv slot-name confirmation ---
+  anchors loaded: 5
+  [Actor::Func304]  slot points to 0x14195f2a0  (FUN_14195f2a0)
+  [Actor::Func310]  slot points to 0x141964690  (FUN_141964690)
+  [Actor::Func311]  slot points to 0x1418e7e60  (FUN_1418e7e60)
+  [Actor::Func313]  slot points to 0x1419164f0  (FUN_1419164f0)
+  [Actor::Func319]  slot points to 0x1419036f0  (FUN_1419036f0)
+
+--- Check 4: slot count distribution ---
+  median slots/vtable: 5
+  p90 slots/vtable:    24
+  p99 slots/vtable:    102
+  max slots/vtable:    200
+  10 largest vtables (suspect over-walk):
+     200 slots  AStarSearch_AStarParameters_CombatNavmeshSearch_CombatPathingGoalPolicyFlee_Comb
+     200 slots  Actor
+     200 slots  AlchemyItem
+     200 slots  ArrowProjectile
+     200 slots  BGSMovableStatic
+     200 slots  BGSNote
+     200 slots  BGSSpatialGridSearch_BGSSpatialGridSearchUtilitiesInternal__GridSearchPolicyWrap
+     200 slots  BGSSpatialGridSearch_BGSSpatialGridSearchUtilitiesInternal__GridSearchPolicyWrap
+     200 slots  BGSTalkingActivator
+     200 slots  BGSTerminal
+
+=== Done ===

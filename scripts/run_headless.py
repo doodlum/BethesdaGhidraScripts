@@ -250,6 +250,49 @@ def _get_folder(root_folder, game, version):
     return ver_folder
 
 
+# Ghidra log lines that are routine + unactionable for Bethesda binaries:
+#   - PDB Universal: Bethesda never ships PDBs, so the "no PDB found" warning
+#     is guaranteed noise for every import.
+#   - Demangler Microsoft "Apply failure": MFC-style mangled local-dtor names
+#     (?dtor$1@?0??...) demangle correctly but Ghidra can't apply the
+#     resulting DemangledVariable as data when the target is already code.
+#     Routine and not worth surfacing.
+_NOISE_PATTERNS = (
+    "PDB Universal>",
+    "Demangler Microsoft> Apply failure",
+)
+
+
+def _filter_noise(text: str) -> str:
+    if not text:
+        return text
+    return "\n".join(line for line in text.splitlines()
+                     if not any(p in line for p in _NOISE_PATTERNS))
+
+
+def _disable_noisy_analyzers(program):
+    """Disable analyzers that would emit noise on Bethesda binaries.
+
+    PDB Universal: Bethesda's shipped exes have no PDB — the analyzer warns
+    on every import.  Demangler Microsoft sometimes fails to apply MFC dtor
+    symbols to existing-code addresses; we don't ship MFC, so the warnings
+    are unactionable.
+    """
+    from ghidra.program.model.listing import Program
+    opts = program.getOptions(Program.ANALYSIS_PROPERTIES)
+    for name in ("PDB Universal", "Demangler Microsoft"):
+        if name in [opts.getName(p) for p in opts.getOptionNames()]:
+            opts.setBoolean(name, False)
+        else:
+            # Some Ghidra versions key the option by exact display name with
+            # no class lookup; setBoolean is a no-op if the analyzer isn't
+            # registered yet (initial import path).  Try it unconditionally.
+            try:
+                opts.setBoolean(name, False)
+            except Exception:
+                pass
+
+
 def _run_one(project, game, version, binary, script_path, monitor):
     from ghidra.app.util.importer import MessageLog
     import ghidra
@@ -296,9 +339,14 @@ def _run_one(project, game, version, binary, script_path, monitor):
     consumer = java.lang.Object()
     program  = domain_file.getDomainObject(consumer, True, False, monitor)
     try:
+        # Suppress noisy analyzers before our script triggers any further
+        # auto-analysis (and persist the off-state so later opens stay quiet).
+        _disable_noisy_analyzers(program)
         print(f"Running {script_path.name} ...")
         stdout, stderr = pyghidra.ghidra_script(
             script_path, project, program, echo_stdout=False, echo_stderr=False)
+        stdout = _filter_noise(stdout)
+        stderr = _filter_noise(stderr)
         if stdout: print(stdout)
         if stderr: print("STDERR:", stderr, file=sys.stderr)
         program.save(f"CommonLib {game} {version} import", monitor)

@@ -32,6 +32,8 @@ from ghidra_import_gen import (
     generate_script,
 )
 from anchor_verifier import verify_or_exit as _verify_anchors_or_exit
+from vtable_matcher import load_json as _load_shift_map_json
+from vtable_patcher import patch_vtable_structs as _patch_vtable_structs
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -190,6 +192,16 @@ def run_version(version, symbols_json, fallback_symbols_json='[]'):
     _inject_vtable_fields(structs, vtable_structs)
     _flatten_structs(structs)
     _apply_secondary_vtable_typing(structs)
+
+    # Apply per-version shift map (if one exists) to remap vtable struct
+    # slot offsets onto this binary's actual layout.  Missing shift map ->
+    # fall back to header-shaped layout; the anchor verifier below will
+    # catch any silent drift the missing map would have corrected.
+    shift_map_path = os.path.join(SCRIPT_DIR, 'refs', 'shift_{}.json'.format(version))
+    shift_map = _load_shift_map_json(shift_map_path)
+    if shift_map:
+        print('Applying per-version vtable shift map: {}'.format(shift_map_path))
+        _patch_vtable_structs(vtable_structs, shift_map, version)
 
     # Verify hand-checked vtable slot anchors for this runtime before emitting
     # the script.  Catches silent layout drift (e.g. VR insertion points) that

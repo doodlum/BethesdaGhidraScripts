@@ -51,6 +51,21 @@ REQUIRED_PACKAGES = {
     "numpy":    "numpy",
 }
 
+
+# Supported runtime versions.  Entries marked "fork" are added by this fork
+# on top of doodlum's upstream (which ships SE/AE + F4 AE only).
+# Each tuple: (key, game, version_label, exe_subdir, script_name, source)
+VERSION_CATALOG = [
+    ("se",    "skyrim",    "Skyrim SE 1.5.97",     "skyrim/se",    "CommonLibImport_SE.py",    "upstream"),
+    ("ae",    "skyrim",    "Skyrim AE 1.6.1170",   "skyrim/ae",    "CommonLibImport_AE.py",    "upstream"),
+    ("svr",   "skyrim",    "Skyrim VR 1.4.15",     "skyrim/vr",    "CommonLibImport_VR.py",    "fork"),
+    ("f4og",  "f4",        "Fallout 4 OG 1.10.163","f4/og",        "CommonLibImport_F4_OG.py", "fork"),
+    ("f4ng",  "f4",        "Fallout 4 NG 1.10.984","f4/ng",        "CommonLibImport_F4_NG.py", "fork"),
+    ("f4ae",  "f4",        "Fallout 4 AE 1.11.191","f4/ae",        "CommonLibImport_F4_AE.py", "upstream"),
+    ("f4vr",  "f4",        "Fallout 4 VR 1.2.72",  "f4/vr",        "CommonLibImport_F4_VR.py", "fork"),
+    ("sf",    "starfield", "Starfield 1.16.236",   "starfield/sf", "CommonLibImport_SF.py",    "fork"),
+]
+
 API_HEADERS = {
     "Accept": "application/vnd.github.v3+json",
     "User-Agent": "BethesdaGhidraScripts",
@@ -515,8 +530,22 @@ def clean_project():
 #  Status display
 # =====================================================================
 
+def _version_status(entry):
+    """Return (exe_present, script_present, exe_path) for a catalog entry."""
+    _, game, _, subdir, script_name, _ = entry
+    ver_dir = EXES_ROOT / subdir
+    exe = None
+    if ver_dir.is_dir():
+        exes = [f for f in sorted(ver_dir.glob("*.exe"))
+                if "unpacked" not in f.name.lower()]
+        if exes:
+            exe = exes[0]
+    script_present = (GHIDRA_SCRIPTS_DIR / script_name).is_file()
+    return (exe is not None), script_present, exe
+
+
 def _print_status():
-    """Print current environment status and return (games, status_lines)."""
+    """Print current environment status and return discovered games set."""
     print()
     print("=" * 60)
     print("  Bethesda Ghidra Scripts")
@@ -536,26 +565,26 @@ def _print_status():
         print(f"    Steamless   : {'OK' if steamless_ok else 'not installed'}")
     print(f"    Python pkgs : {'OK' if pkgs_ok else 'missing'}")
 
-    # Executables
-    exes = _discover_exes()
-    games = {g for g, _, _ in exes}
+    # Versions (catalog-driven)
     print()
-    print("  Executables:")
-    if exes:
-        for game, ver, exe in exes:
-            print(f"    {game}/{ver}: {exe.name}")
-    else:
-        print("    (none found)")
+    print("  Supported versions  (legend: + fork-added beyond doodlum upstream)")
+    print(f"    {'':<25} {'exe':<5} {'script':<7} src")
+    for entry in VERSION_CATALOG:
+        _, game, label, subdir, script_name, source = entry
+        exe_ok, script_ok, _ = _version_status(entry)
+        exe_mark    = "✓" if exe_ok else "·"
+        script_mark = "✓" if script_ok else "·"
+        src_mark    = "+ fork" if source == "fork" else "upstream"
+        print(f"    {label:<25} {exe_mark:<5} {script_mark:<7} {src_mark}")
 
-    # Generated scripts
-    has_scripts = _scripts_exist(games) if games else False
+    # Generated scripts + project
     has_project = _project_exists()
     print()
     print("  Output:")
-    print(f"    Import scripts : {'OK' if has_scripts else 'not generated'}")
     print(f"    Ghidra project : {'OK' if has_project else 'not created'}")
 
-    return games
+    return {entry[1] for entry in VERSION_CATALOG
+            if _version_status(entry)[0]}
 
 
 # =====================================================================
@@ -565,11 +594,12 @@ def _print_status():
 MENU_ITEMS = [
     ("1", "Install prerequisites (Python packages, Ghidra, Clang, Steamless)"),
     ("2", "Update CommonLib submodules to latest"),
-    ("3", "Generate import scripts"),
-    ("4", "Run headless Ghidra import"),
-    ("5", "Open Ghidra"),
-    ("6", "Full rebuild (generate + import)"),
-    ("7", "Clean Ghidra project (start fresh)"),
+    ("3", "Process a specific version (per-version menu)"),
+    ("4", "Generate import scripts (all detected versions)"),
+    ("5", "Run headless Ghidra import"),
+    ("6", "Open Ghidra"),
+    ("7", "Full rebuild (generate + import all)"),
+    ("8", "Clean Ghidra project (start fresh)"),
     ("q", "Quit"),
 ]
 
@@ -582,8 +612,71 @@ def _show_menu():
     print("-" * 40)
 
 
+def _version_submenu():
+    """Per-version action menu.  Lets the user pick one version from the
+    catalog and process it end-to-end (generate import script + headless
+    Ghidra import).  Useful when only one game/version exe is on disk and
+    the user wants to process just that one.
+    """
+    while True:
+        print()
+        print("-" * 60)
+        print("  Process a specific version")
+        print("-" * 60)
+        print(f"  {'#':<3} {'version':<25} {'exe':<5} {'script':<7} src")
+        for i, entry in enumerate(VERSION_CATALOG, 1):
+            _, game, label, subdir, script_name, source = entry
+            exe_ok, script_ok, _ = _version_status(entry)
+            exe_mark    = "✓" if exe_ok else "·"
+            script_mark = "✓" if script_ok else "·"
+            src_mark    = "+ fork" if source == "fork" else "upstream"
+            print(f"  {i:<3} {label:<25} {exe_mark:<5} {script_mark:<7} {src_mark}")
+        print(f"  a   Process all versions whose exe is present")
+        print(f"  b   Back to main menu")
+        print("-" * 60)
+
+        try:
+            choice = input("\n  version > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+        if choice == "b":
+            return
+        if choice == "a":
+            present = {entry[1] for entry in VERSION_CATALOG
+                       if _version_status(entry)[0]}
+            if not present:
+                print("  No executables present in exes/ — nothing to process.")
+                continue
+            generate_scripts(present)
+            rc = run_headless()
+            if rc == 0:
+                _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+            return
+        if not choice.isdigit() or not (1 <= int(choice) <= len(VERSION_CATALOG)):
+            print("  Invalid choice.")
+            continue
+
+        entry = VERSION_CATALOG[int(choice) - 1]
+        _, game, label, subdir, script_name, source = entry
+        exe_ok, script_ok, exe_path = _version_status(entry)
+        if not exe_ok:
+            print(f"  {label}: exe not found at exes/{subdir}/")
+            print(f"  Drop a Starfield/Skyrim/Fallout4 .exe in that subdir, then retry.")
+            continue
+        print(f"  Processing {label} ...")
+        # Parsers operate at the game level, not per-runtime, so all versions
+        # of a game get regenerated together.  That's still cheap.
+        generate_scripts({game})
+        rc = run_headless()
+        if rc == 0:
+            _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
+        return
+
+
 def _run_menu():
-    games = _print_status()
+    _print_status()
     _show_menu()
 
     while True:
@@ -603,28 +696,30 @@ def _run_menu():
         elif choice == "2":
             update_submodules()
         elif choice == "3":
+            _version_submenu()
+        elif choice == "4":
             games = _discover_games()
             generate_scripts(games)
-        elif choice == "4":
+        elif choice == "5":
             rc = run_headless()
             if rc == 0:
                 _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
-        elif choice == "5":
+        elif choice == "6":
             launch_ghidra()
             break
-        elif choice == "6":
+        elif choice == "7":
             games = _discover_games()
             generate_scripts(games)
             rc = run_headless()
             if rc == 0:
                 _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
-        elif choice == "7":
+        elif choice == "8":
             clean_project()
         else:
             print("  Invalid choice.")
             continue
 
-        games = _print_status()
+        _print_status()
         _show_menu()
 
 
