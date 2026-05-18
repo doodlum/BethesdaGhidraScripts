@@ -63,6 +63,7 @@ VERSION_CATALOG = [
     ("f4ng",  "f4",        "Fallout 4 NG 1.10.984","f4/ng",        "CommonLibImport_F4_NG.py", "fork"),
     ("f4ae",  "f4",        "Fallout 4 AE 1.11.191","f4/ae",        "CommonLibImport_F4_AE.py", "upstream"),
     ("f4vr",  "f4",        "Fallout 4 VR 1.2.72",  "f4/vr",        "CommonLibImport_F4_VR.py", "fork"),
+    ("fnv",   "fnv",       "Fallout NV 1.4.0.525", "fnv/og",       "CommonLibImport_FNV.py",   "fork"),
     ("sf",    "starfield", "Starfield 1.16.236",   "starfield/sf", "CommonLibImport_SF.py",    "fork"),
 ]
 
@@ -600,8 +601,202 @@ MENU_ITEMS = [
     ("6", "Open Ghidra"),
     ("7", "Full rebuild (generate + import all)"),
     ("8", "Clean Ghidra project (start fresh)"),
+    ("9", "Enrich an existing Ghidra project (RTTI vtable pipeline)"),
     ("q", "Quit"),
 ]
+
+
+# =====================================================================
+#  Ghidra project discovery + RTTI vtable enrichment menu
+# =====================================================================
+
+EXTERNAL_GHIDRA_ROOTS = [
+    Path("C:/GhidraProjects"),
+]
+
+
+def _discover_ghidra_projects():
+    """Find all .gpr Ghidra projects in known roots.
+
+    Includes the in-repo project plus any under EXTERNAL_GHIDRA_ROOTS
+    (e.g., C:/GhidraProjects/Combined.gpr if the user has a separate
+    pre-analyzed corpus).  Returns a list of (display_name, project_dir,
+    project_name) tuples.
+    """
+    out = []
+    in_repo_gpr = PROJECTS_DIR / GHIDRA_PROJECT_NAME / f"{GHIDRA_PROJECT_NAME}.gpr"
+    if in_repo_gpr.is_file():
+        out.append(("(this repo) " + GHIDRA_PROJECT_NAME,
+                    str(PROJECTS_DIR / GHIDRA_PROJECT_NAME),
+                    GHIDRA_PROJECT_NAME))
+    seen = {(in_repo_gpr.parent.resolve())}
+    for root in EXTERNAL_GHIDRA_ROOTS:
+        if not root.is_dir():
+            continue
+        for gpr in sorted(root.glob("*.gpr")):
+            project_dir = gpr.parent.resolve()
+            if project_dir in seen:
+                continue
+            seen.add(project_dir)
+            out.append((gpr.stem, str(project_dir), gpr.stem))
+        # Also probe one level down (e.g., C:/GhidraProjects/Fallout/F4VR.gpr)
+        for sub in sorted(root.iterdir()):
+            if not sub.is_dir():
+                continue
+            for gpr in sorted(sub.glob("*.gpr")):
+                project_dir = gpr.parent.resolve()
+                if project_dir in seen:
+                    continue
+                seen.add(project_dir)
+                out.append((f"{sub.name}/{gpr.stem}", str(project_dir), gpr.stem))
+    return out
+
+
+def _project_lock_files(project_dir, project_name):
+    """Return a list of any present Ghidra lock files for the project.
+
+    Ghidra writes <project>.lock (and sometimes <project>.lock~) into the
+    project directory whenever the project is opened, whether by the GUI
+    or a headless/pyghidra session.  Presence of either indicates the
+    project is currently held by another JVM.
+    """
+    base = Path(project_dir) / project_name
+    return [p for p in (base.with_suffix(".lock"),
+                        Path(str(base) + ".lock~"))
+            if p.exists()]
+
+
+_LOCK_HINTS = ("LockException", "Unable to lock", "already locked",
+               "already opened", "is in use", "lock is held")
+
+
+def _list_programs_in_project(project_dir, project_name):
+    """Return list of (program_path, ...) tuples, or {"locked": "<reason>"}
+    on lock detection, or None on any other failure.
+    """
+    locks = _project_lock_files(project_dir, project_name)
+    if locks:
+        return {"locked": f"lock file(s) present: {', '.join(str(p) for p in locks)}"}
+
+    os.environ.setdefault("GHIDRA_INSTALL_DIR", str(GHIDRA_DIR))
+    try:
+        import pyghidra
+        pyghidra.start(install_dir=GHIDRA_DIR)
+        import java.lang  # noqa: F401
+        from ghidra.util.task import ConsoleTaskMonitor  # noqa: F401
+    except Exception as e:
+        print(f"  ERROR starting pyghidra: {e}")
+        return None
+
+    programs = []
+    try:
+        with pyghidra.open_project(project_dir, project_name, create=False) as project:
+            root_folder = project.getProjectData().getRootFolder()
+            def walk(folder, prefix=""):
+                for f in folder.getFiles():
+                    if f.getContentType() == "Program":
+                        programs.append((prefix + "/" + f.getName(), None))
+                for sub in folder.getFolders():
+                    walk(sub, prefix + "/" + sub.getName())
+            walk(root_folder, "")
+    except Exception as e:
+        msg = str(e)
+        if any(h in msg for h in _LOCK_HINTS):
+            return {"locked": msg.splitlines()[0][:200]}
+        print(f"  ERROR opening project: {e}")
+        return None
+    return programs
+
+
+def _enrich_menu():
+    """Submenu: pick a Ghidra project + program, run RTTI vtable pipeline.
+
+    Detects pre-analyzed projects (this repo + C:/GhidraProjects).  Useful
+    when you already have a fully-analyzed binary somewhere and just want
+    to apply our RTTI-driven vtable expansion to bump its named-function
+    count.
+    """
+    projects = _discover_ghidra_projects()
+    if not projects:
+        print("  No Ghidra projects discovered.")
+        return
+
+    print()
+    print("-" * 60)
+    print("  Enrich existing Ghidra project — RTTI vtable pipeline")
+    print("-" * 60)
+    print("  Discovered Ghidra projects:")
+    for i, (label, _, _) in enumerate(projects, 1):
+        print(f"    {i}) {label}")
+    print("    b) Back")
+    print("-" * 60)
+    try:
+        sel = input("\n  project > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if sel == "b" or not sel.isdigit():
+        return
+    idx = int(sel)
+    if not (1 <= idx <= len(projects)):
+        print("  Invalid choice.")
+        return
+    label, pdir, pname = projects[idx - 1]
+    print(f"\n  Opening {label} to list programs ...")
+    result = _list_programs_in_project(pdir, pname)
+
+    if isinstance(result, dict) and result.get("locked"):
+        print()
+        print("=" * 60)
+        print(f"  Project {label!r} is locked — close Ghidra to continue.")
+        print(f"  Close any open CodeBrowser / Ghidra Project Manager that")
+        print(f"  has this project open, then try option 9 again.")
+        print()
+        print(f"  Reason: {result['locked']}")
+        print("=" * 60)
+        print()
+        input("  Press Enter to return to main menu ... ")
+        return
+    if result is None:
+        print()
+        print("=" * 60)
+        print(f"  Could not open project {label!r}.  See error above.")
+        print("=" * 60)
+        print()
+        input("  Press Enter to return to main menu ... ")
+        return
+    programs = result
+    if not programs:
+        print("  No programs in project.")
+        input("  Press Enter to return to main menu ... ")
+        return
+
+    print()
+    print("-" * 60)
+    print(f"  Programs in {label}")
+    print("-" * 60)
+    for i, (path, _) in enumerate(programs, 1):
+        print(f"    {i:>3}) {path}")
+    print("    b) Back")
+    print("-" * 60)
+    try:
+        sel = input("\n  program > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if sel == "b" or not sel.isdigit():
+        return
+    pidx = int(sel)
+    if not (1 <= pidx <= len(programs)):
+        print("  Invalid choice.")
+        return
+    program_path, _ = programs[pidx - 1]
+
+    args = [sys.executable,
+            str(SCRIPTS_DIR / "core" / "run_vtable_pipeline.py"),
+            pdir, pname, program_path]
+    _header(f"RTTI vtable pipeline: {label} {program_path}")
+    subprocess.run(args, check=False)
 
 
 def _show_menu():
@@ -715,6 +910,8 @@ def _run_menu():
                 _save_state(_get_submodule_hashes(), _get_exe_fingerprints())
         elif choice == "8":
             clean_project()
+        elif choice == "9":
+            _enrich_menu()
         else:
             print("  Invalid choice.")
             continue
